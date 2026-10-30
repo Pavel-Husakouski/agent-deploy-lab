@@ -1,0 +1,19 @@
+# kind-кластер стенда: одна нода, NodePort-сервисы проброшены на localhost.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: agent-deploy-lab
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # agent API: CLI ходит на localhost:3000 без изменений
+      - containerPort: 30000
+        hostPort: 3000
+        listenAddress: 127.0.0.1
+      # Argo CD UI
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: 127.0.0.1
+      # Prometheus UI
+      - containerPort: 30090
+        hostPort: 9090
+        listenAddress: 127.0.0.1

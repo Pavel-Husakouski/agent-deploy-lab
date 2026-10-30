@@ -1,0 +1,33 @@
+# Values для helm install argo-cd. Argo CD — единственное, что ставится не из git (make up).
+
+dex:
+  enabled: false
+
+notifications:
+  enabled: false
+
+configs:
+  params:
+    # TLS не нужен: UI доступен только на 127.0.0.1
+    server.insecure: true
+  cm:
+    # Health для Application: без него sync waves в app-of-apps не ждут готовности дочерних
+    # приложений, и agent синхронизируется раньше, чем появятся CRD Argo Rollouts.
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = ""
+      if obj.status ~= nil then
+        if obj.status.health ~= nil then
+          hs.status = obj.status.health.status
+          if obj.status.health.message ~= nil then
+            hs.message = obj.status.health.message
+          end
+        end
+      end
+      return hs
+
+server:
+  service:
+    type: NodePort
+    nodePortHttp: 30080
