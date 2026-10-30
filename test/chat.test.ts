@@ -3,7 +3,13 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/api/server.js';
 import type { HistoryRecord, HistoryStore } from '../src/history.js';
 import { makeRecord } from '../src/history.js';
-import type { ChatMessage, LlmClient, LlmEvent, TokenUsage } from '../src/llm.js';
+import type {
+  ChatMessage,
+  FinishReason,
+  LlmClient,
+  LlmEvent,
+  TokenUsage,
+} from '../src/llm.js';
 import type { Release } from '../src/release.js';
 
 class MemoryStore implements HistoryStore {
@@ -27,6 +33,7 @@ class FakeLlm implements LlmClient {
     private readonly chunks: string[],
     private readonly failAfter?: number,
     private readonly usage?: TokenUsage,
+    private readonly finishReason?: FinishReason,
   ) {}
 
   async *streamChat(messages: ChatMessage[]): AsyncIterable<LlmEvent> {
@@ -36,6 +43,7 @@ class FakeLlm implements LlmClient {
       yield { type: 'delta', text: chunk };
     }
     if (this.usage) yield { type: 'usage', usage: this.usage };
+    if (this.finishReason) yield { type: 'finish', reason: this.finishReason };
   }
 }
 
@@ -192,6 +200,29 @@ describe('GET /metrics', () => {
     expect(metric(body, 'agent_chat_ttft_seconds_count')).toBe(1);
     expect(metric(body, 'agent_release_info', 'prompt_sha256="' + 'a'.repeat(64))).toBe(1);
     expect(body).toContain(common);
+  });
+
+  it('считает ответы, обрезанные по maxTokens', async () => {
+    const usage = { promptTokens: 10, completionTokens: 1024 };
+    const cut = new FakeLlm(['длинный'], undefined, usage, 'length');
+    app = buildApp({ llm: cut, store: new MemoryStore(), release: RELEASE });
+
+    await app.inject({ method: 'POST', url: '/chat', payload: { sessionId: 's1', message: 'q' } });
+    const body = (await app.inject({ method: 'GET', url: '/metrics' })).body;
+
+    expect(metric(body, 'agent_llm_truncated_total')).toBe(1);
+    // Обрезанный ответ всё равно доставлен пользователю и считается ok.
+    expect(metric(body, 'agent_chat_requests_total', 'status="ok"')).toBe(1);
+  });
+
+  it('ответ с finish_reason=stop не считается обрезанным', async () => {
+    const llm = new FakeLlm(['ок'], undefined, undefined, 'stop');
+    app = buildApp({ llm, store: new MemoryStore(), release: RELEASE });
+
+    await app.inject({ method: 'POST', url: '/chat', payload: { sessionId: 's1', message: 'q' } });
+    const body = (await app.inject({ method: 'GET', url: '/metrics' })).body;
+
+    expect(metric(body, 'agent_llm_truncated_total')).toBe(0);
   });
 
   it('ошибка LLM считается со статусом error', async () => {

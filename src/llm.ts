@@ -12,8 +12,15 @@ export interface TokenUsage {
   completionTokens: number;
 }
 
-// События стрима: фрагменты текста, в конце — расход токенов (если провайдер его отдал).
-export type LlmEvent = { type: 'delta'; text: string } | { type: 'usage'; usage: TokenUsage };
+// Причина конца генерации: stop — модель закончила сама, length — упёрлась в maxTokens.
+export type FinishReason = 'stop' | 'length' | (string & {});
+
+// События стрима: фрагменты текста, в конце — расход токенов (если провайдер его отдал)
+// и причина конца генерации.
+export type LlmEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'usage'; usage: TokenUsage }
+  | { type: 'finish'; reason: FinishReason };
 
 // Абстракция над LLM: в тестах подменяется фейком, в проде — DeepSeek.
 export interface LlmClient {
@@ -46,9 +53,12 @@ export function createDeepSeekClient(options: DeepSeekOptions): LlmClient {
         },
         { signal },
       );
+      let finishReason: FinishReason | undefined;
       for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
+        const choice = chunk.choices[0];
+        const delta = choice?.delta?.content;
         if (delta) yield { type: 'delta', text: delta };
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
         if (chunk.usage) {
           yield {
             type: 'usage',
@@ -59,6 +69,7 @@ export function createDeepSeekClient(options: DeepSeekOptions): LlmClient {
           };
         }
       }
+      if (finishReason) yield { type: 'finish', reason: finishReason };
     },
   };
 }

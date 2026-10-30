@@ -1,6 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
-import { createDeepSeekClient, type ChatMessage, type TokenUsage } from '../src/llm.js';
+import {
+  createDeepSeekClient,
+  type ChatMessage,
+  type FinishReason,
+  type TokenUsage,
+} from '../src/llm.js';
 import { estimateCostUsd, loadRelease } from '../src/release.js';
 
 // Custom provider для promptfoo: проверяется ровно тот релиз, который поедет в прод.
@@ -21,6 +26,8 @@ interface ProviderResponse {
   error?: string;
   tokenUsage?: { total: number; prompt: number; completion: number };
   cost?: number;
+  // Проверяется assertion finish-reason: length означает, что ответ обрезан по maxTokens.
+  finishReason?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -62,13 +69,16 @@ export default class TrainerReleaseProvider {
 
     let output = '';
     let usage: TokenUsage | undefined;
+    let finishReason: FinishReason | undefined;
     for await (const event of llm.streamChat(messages)) {
       if (event.type === 'delta') output += event.text;
-      else usage = event.usage;
+      else if (event.type === 'usage') usage = event.usage;
+      else finishReason = event.reason;
     }
 
     return {
       output,
+      ...(finishReason && { finishReason }),
       ...(usage && {
         tokenUsage: {
           total: usage.promptTokens + usage.completionTokens,
