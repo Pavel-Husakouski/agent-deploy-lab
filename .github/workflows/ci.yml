@@ -1,0 +1,95 @@
+# Release checks: каждый PR в main и каждый push в main проходят checks и eval gate.
+# Оба job — required status checks в branch protection: красный job блокирует merge.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # check:manifest сравнивает release.json и промпты с base, нужна история.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: check:manifest
+        env:
+          # В PR base — целевая ветка, при push в main — коммит до push.
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: npm run check:manifest -- --base "$BASE"
+
+      - name: release version
+        id: release
+        run: echo "version=$(node -p "require('./release.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Сборка образа без push: Dockerfile не сломан. Push в GHCR — этап 5.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          build-args: |
+            VERSION=${{ steps.release.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  eval:
+    name: eval
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            evals/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund --prefix evals
+
+      # golden (pass rate >= 90%) и injection (100%), итог в Job Summary.
+      - name: eval gate
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: npm run eval
+
+      - name: eval reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-reports
+          path: reports/
+          if-no-files-found: ignore
