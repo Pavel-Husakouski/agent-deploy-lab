@@ -1,0 +1,8 @@
+# Откуда Argo CD берёт манифесты стенда. targetRevision подменяет make up (REVISION=ветка).
+repoURL: https://github.com/Pavel-Husakouski/agent-deploy-lab.git
+targetRevision: main
+
+# Версии сторонних charts фиксированы: обновление — отдельный коммит.
+charts:
+  argoRollouts: 2.43.8
+  prometheus: 29.40.0
