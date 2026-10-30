@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkManifest, type RepoSnapshot } from '../src/manifest-check.js';
+import { checkManifest, datasetFingerprint, type RepoSnapshot } from '../src/manifest-check.js';
 import { sha256, type ReleaseManifest } from '../src/release.js';
 
 const V1 = 'Промпт v1\n';
@@ -20,10 +20,15 @@ function manifest(overrides: Partial<ReleaseManifest> = {}): ReleaseManifest {
   };
 }
 
-function snapshot(m: ReleaseManifest | null, prompts: Record<string, string>): RepoSnapshot {
+function snapshot(
+  m: ReleaseManifest | null,
+  prompts: Record<string, string>,
+  datasets: Record<string, string> = { 'golden-v1': 'fp-1' },
+): RepoSnapshot {
   return {
     manifest: m === null ? null : JSON.stringify(m),
     prompts: new Map(Object.entries(prompts)),
+    datasets: new Map(Object.entries(datasets)),
   };
 }
 
@@ -86,8 +91,42 @@ describe('checkManifest', () => {
     expect(errors).toEqual([expect.stringMatching(/trainer-v1 уже выпущен и неизменяем/)]);
   });
 
+  it('правило 5: каталога eval dataset нет', () => {
+    const errors = checkManifest(snapshot(manifest(), { 'trainer-v1': V1 }, {}), null);
+    expect(errors).toEqual([expect.stringMatching(/evals\/golden-v1\//)]);
+  });
+
+  it('правило 3: правка выпущенного dataset без bump версии', () => {
+    const current = snapshot(manifest(), { 'trainer-v1': V1 }, { 'golden-v1': 'fp-2' });
+    expect(checkManifest(current, BASE)).toEqual([expect.stringMatching(/сделайте bump/)]);
+  });
+
+  it('правка dataset с bump версии — ок', () => {
+    const current = snapshot(
+      manifest({ version: '0.1.1' }),
+      { 'trainer-v1': V1 },
+      { 'golden-v1': 'fp-2' },
+    );
+    expect(checkManifest(current, BASE)).toEqual([]);
+  });
+
+  it('каталог dataset появился впервые — bump не нужен', () => {
+    const base = snapshot(manifest(), { 'trainer-v1': V1 }, {});
+    expect(checkManifest(snapshot(manifest(), { 'trainer-v1': V1 }), base)).toEqual([]);
+  });
+
   it('первый релиз: в base нет manifest, правила 3 и 4 не применяются', () => {
     const base = snapshot(null, { 'trainer-v1': 'старый текст' });
     expect(checkManifest(snapshot(manifest(), { 'trainer-v1': V1 }), base)).toEqual([]);
+  });
+});
+
+describe('datasetFingerprint', () => {
+  it('не зависит от порядка файлов и меняется при правке содержимого', () => {
+    const a = datasetFingerprint(new Map([['a.yaml', '1'], ['b.yaml', '2']]));
+    const b = datasetFingerprint(new Map([['b.yaml', '2'], ['a.yaml', '1']]));
+    const c = datasetFingerprint(new Map([['a.yaml', '1'], ['b.yaml', '3']]));
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
   });
 });
