@@ -8,6 +8,9 @@ node_modules
 dist
 test
 scripts
+evals
+reports
+.github
 *.md
 !prompts/*.md
 docker-compose.yml

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { TokenUsage } from './llm.js';
 
 // Release manifest: всё, что влияет на поведение агента, кроме кода (код версионируется тегом
 // образа). Правила изменения manifest проверяет scripts/check-manifest.ts.
@@ -72,6 +73,16 @@ export async function loadRelease(root = '.'): Promise<Release> {
     );
   }
   return { manifest, systemPrompt };
+}
+
+// Оценка стоимости вызова LLM в USD по pricing из manifest. Скидка за cache hit не учитывается:
+// стоимость — оценка сверху. Используется в метриках API и в eval (assertion cost).
+export function estimateCostUsd(
+  usage: TokenUsage,
+  pricing: ReleaseManifest['model']['pricing'],
+): number {
+  const { inputPerMTok, outputPerMTok } = pricing;
+  return (usage.promptTokens * inputPerMTok + usage.completionTokens * outputPerMTok) / 1e6;
 }
 
 // Сравнение semver без pre-release: >0, если a новее b.

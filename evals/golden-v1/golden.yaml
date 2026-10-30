@@ -1,0 +1,209 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+# Golden set тренера: формат разбора, оценка ответов, «не знаю», возврат к теме, язык.
+# Gate: pass rate >= 90% (порог задаёт scripts/eval.ts), cost <= $0.002 на ответ.
+description: golden-v1 / golden
+
+prompts:
+  - '{{message}}'
+
+providers:
+  - id: file://../provider.ts
+    label: release
+
+defaultTest:
+  options:
+    # Grader тоже DeepSeek; thinking выключен, temperature 0 для стабильности оценок.
+    provider:
+      id: deepseek:deepseek-flash
+      config:
+        temperature: 0
+        reasoning_effort: none
+  assert:
+    - type: cost
+      threshold: 0.002
+      metric: cost
+
+# Вопрос тренера, на который отвечает кандидат в кейсах с историей.
+x-history-manifest: &history-manifest
+  - role: user
+    content: Привет, давай начнём
+  - role: assistant
+    content: |
+      Привет! Начнём с версионирования.
+
+      **Вопрос:** что должно входить в release manifest AI-агента и зачем фиксировать
+      sha256 промпта, а не только его имя?
+
+x-history-rollback: &history-rollback
+  - role: user
+    content: Привет, давай начнём
+  - role: assistant
+    content: |
+      Привет! Начнём с отката.
+
+      **Вопрос:** новая версия агента начала записывать историю диалогов в Redis в новом
+      формате, и её нужно откатить. Какие проблемы возникнут и как их избежать?
+
+x-sections: &sections
+  type: icontains-all
+  value: ['Оценка', 'Что хорошо', 'Чего не хватает', 'Эталонный ответ', 'Следующий вопрос']
+  metric: format
+
+tests:
+  - description: старт — приветствие и ровно один вопрос, без оценки
+    vars:
+      message: Привет, давай начнём
+    assert:
+      - type: not-icontains
+        value: Оценка
+        metric: format
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ кратко приветствует и задаёт ровно один вопрос по теме доставки AI-агентов в
+          прод (версионирование, evals, canary, rollback, IaC/GitOps, code review). Ответ не
+          содержит оценки и не задаёт несколько вопросов сразу.
+
+  - description: сильный ответ — полный формат разбора и оценка 7–10
+    vars:
+      history: *history-manifest
+      message: >-
+        В manifest входят версия релиза по semver, git sha кода, id модели и snapshot,
+        temperature и max tokens, id промпта и его sha256, версии tool schemas, конфиг gateway
+        с fallback-моделью и id eval dataset. sha256 нужен, потому что имя промпта не
+        гарантирует содержимое: файл могут поправить под тем же именем, а хэш делает изменение
+        видимым, его проверяет CI и API при старте. Тогда каждый trace помечен версией релиза,
+        а rollback — это повторный деплой предыдущего manifest целиком.
+    assert:
+      - *sections
+      - type: javascript
+        metric: scoring
+        value: |
+          const m = output.match(/Оценка[^0-9]{0,15}?(\d{1,2})\s*\/\s*10/);
+          if (!m) return { pass: false, score: 0, reason: 'нет оценки вида N/10' };
+          const n = Number(m[1]);
+          return { pass: n >= 7, score: n / 10, reason: `оценка ${n}/10, ожидается 7–10` };
+
+  - description: слабый ответ — оценка 0–4
+    vars:
+      history: *history-manifest
+      message: Ну там версия и название промпта. Хэш нужен для безопасности.
+    assert:
+      - *sections
+      - type: javascript
+        metric: scoring
+        value: |
+          const m = output.match(/Оценка[^0-9]{0,15}?(\d{1,2})\s*\/\s*10/);
+          if (!m) return { pass: false, score: 0, reason: 'нет оценки вида N/10' };
+          const n = Number(m[1]);
+          return { pass: n <= 4, score: 1 - n / 10, reason: `оценка ${n}/10, ожидается 0–4` };
+
+  - description: средний ответ — оценка 3–8
+    vars:
+      history: *history-manifest
+      message: >-
+        В manifest нужно записать версию релиза, модель с temperature и id промпта с его
+        sha256. Хэш нужен, чтобы заметить, если промпт поменяли без смены версии.
+    assert:
+      - *sections
+      - type: javascript
+        metric: scoring
+        value: |
+          const m = output.match(/Оценка[^0-9]{0,15}?(\d{1,2})\s*\/\s*10/);
+          if (!m) return { pass: false, score: 0, reason: 'нет оценки вида N/10' };
+          const n = Number(m[1]);
+          return { pass: n >= 3 && n <= 8, score: 1, reason: `оценка ${n}/10, ожидается 3–8` };
+
+  - description: «не знаю» — 0/10 и эталонный ответ
+    vars:
+      history: *history-manifest
+      message: не знаю
+    assert:
+      - type: regex
+        value: 'Оценка[^0-9]{0,15}?0\s*/\s*10'
+        metric: scoring
+      - type: icontains
+        value: Эталонный ответ
+        metric: format
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ содержит содержательный эталонный ответ про release manifest AI-агента и
+          sha256 промпта, а затем задаёт один новый вопрос.
+
+  - description: сильный ответ про rollback — оценка 7–10
+    vars:
+      history: *history-rollback
+      message: >-
+        Старая версия не сможет прочитать записи нового формата: упадёт или потеряет историю.
+        Поэтому в записи хранят schemaVersion и делают изменения схемы expand/contract: сначала
+        релиз, который умеет читать оба формата, потом релиз, который пишет новый. Тогда откат
+        на предыдущую версию безопасен. Если так не получилось, нужна обратная миграция или
+        старый код пропускает незнакомые записи, а не падает. Откатывается весь manifest,
+        и это проверяется в runbook отката заранее, а не во время инцидента.
+    assert:
+      - *sections
+      - type: javascript
+        metric: scoring
+        value: |
+          const m = output.match(/Оценка[^0-9]{0,15}?(\d{1,2})\s*\/\s*10/);
+          if (!m) return { pass: false, score: 0, reason: 'нет оценки вида N/10' };
+          const n = Number(m[1]);
+          return { pass: n >= 7, score: n / 10, reason: `оценка ${n}/10, ожидается 7–10` };
+
+  - description: сообщение не по теме — возврат к текущему вопросу без оценки
+    vars:
+      history: *history-rollback
+      message: Слушай, а какой фильм посмотреть сегодня вечером?
+    assert:
+      - type: not-regex
+        value: 'Оценка[^0-9]{0,15}?\d{1,2}\s*/\s*10'
+        metric: format
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ не советует фильмы, вежливо возвращает разговор к текущему вопросу про откат
+          версии агента и формат истории в Redis.
+
+  - description: ответ кандидата на английском — разбор всё равно на русском
+    vars:
+      history: *history-manifest
+      message: >-
+        The manifest should contain the release version, model id with parameters, prompt id
+        with its sha256 hash and the eval dataset. The hash detects prompt edits that were
+        made without changing the name.
+    assert:
+      - *sections
+      - type: javascript
+        metric: language
+        value: |
+          const letters = output.match(/[A-Za-zА-Яа-яЁё]/g) ?? [];
+          const cyr = letters.filter((c) => /[А-Яа-яЁё]/.test(c)).length;
+          const ratio = letters.length ? cyr / letters.length : 0;
+          return { pass: ratio > 0.6, score: ratio, reason: `доля кириллицы ${ratio.toFixed(2)}` };
+
+  - description: старт на английском — ответ на русском
+    vars:
+      message: Hi! Let's start the training.
+    assert:
+      - type: javascript
+        metric: language
+        value: |
+          const letters = output.match(/[A-Za-zА-Яа-яЁё]/g) ?? [];
+          const cyr = letters.filter((c) => /[А-Яа-яЁё]/.test(c)).length;
+          const ratio = letters.length ? cyr / letters.length : 0;
+          return { pass: ratio > 0.6, score: ratio, reason: `доля кириллицы ${ratio.toFixed(2)}` };
+
+  - description: следующий вопрос не повторяет уже заданный
+    vars:
+      history: *history-manifest
+      message: >-
+        Версия, модель с параметрами, id и sha256 промпта, eval dataset. Хэш ловит правку
+        промпта без смены имени.
+    assert:
+      - *sections
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          В разделе «Следующий вопрос» задан новый вопрос, который не повторяет вопрос про
+          состав release manifest и sha256 промпта.
