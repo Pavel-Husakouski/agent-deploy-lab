@@ -3,8 +3,9 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Сейчас готов **этап 2**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
-Dockerfile, метрики Prometheus. Локально через `docker compose`.
+Сейчас готов **этап 3**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
+Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Локально через
+`docker compose`.
 
 Приложение — тренер к интервью: задаёт вопрос по теме доставки агентов, оценивает ответ
 по шкале 0–10, даёт эталонный ответ и задаёт следующий вопрос. Какой system prompt и какая
@@ -117,7 +118,7 @@ docker compose exec redis redis-cli LRANGE session:<sessionId> 0 -1
 | `model`         | id модели, `temperature`, `maxTokens`, `pricing` (USD за 1M)  |
 | `prompt.id`     | system prompt из файла `prompts/<id>.md`                      |
 | `prompt.sha256` | sha256 файла промпта                                          |
-| `evalDataset`   | датасет для eval gate (этап 3)                                |
+| `evalDataset`   | eval dataset для gate: каталог `evals/<id>/`                  |
 
 Код версионируется тегом образа (версия + git sha, этап 5), поэтому правка кода bump не
 требует. API при старте сверяет sha256 промпта с manifest и не запускается при расхождении.
@@ -127,8 +128,10 @@ docker compose exec redis redis-cli LRANGE session:<sessionId> 0 -1
 
 1. `release.json` не проходит схему или `version` не semver;
 2. sha256 файла промпта не совпадает с `prompt.sha256`;
-3. изменились промпт, `model` или `evalDataset`, а `version` не выросла (или уменьшилась);
-4. изменился текст промпта, который уже есть в base: выпущенный промпт неизменяем.
+3. изменились промпт, `model`, `evalDataset` или содержимое `evals/<evalDataset>/`, а
+   `version` не выросла (или уменьшилась);
+4. изменился текст промпта, который уже есть в base: выпущенный промпт неизменяем;
+5. нет каталога `evals/<evalDataset>/`.
 
 Если в base ещё нет `release.json`, правила 3 и 4 пропускаются (первый релиз).
 
@@ -140,6 +143,47 @@ sha256sum prompts/trainer-v2.md                  # sha256 в release.json
 # в release.json: prompt.id = trainer-v2, prompt.sha256 = ..., version = следующая
 npm run check:manifest
 ```
+
+## CI и eval gate
+
+Workflow [.github/workflows/ci.yml](.github/workflows/ci.yml) запускается на каждый PR в
+`main` и на push в `main`. Оба job — required status checks: пока они не зелёные, merge
+заблокирован (branch protection, в том числе для админов).
+
+| Job      | Шаги                                                                          |
+|----------|-------------------------------------------------------------------------------|
+| `checks` | typecheck, vitest, `check:manifest` против base ветки PR, `docker build`      |
+| `eval`   | `npm run eval`: наборы promptfoo, итог в Job Summary, отчёты в artifacts      |
+
+`eval` использует секрет репозитория `DEEPSEEK_API_KEY`. Наборы лежат в
+`evals/<evalDataset>/` и выбираются по `release.json`:
+
+| Набор       | Что проверяет                                                 | Порог |
+|-------------|---------------------------------------------------------------|-------|
+| `golden`    | формат разбора, оценка сильного/слабого ответа, «не знаю»,    | 90%   |
+|             | возврат к теме, русский язык, неповтор вопросов               |       |
+| `injection` | утечка system prompt, смена роли, подмена оценки,             | 100%  |
+|             | скрытые команды в ответе кандидата                            |       |
+
+- В каждом тесте assertion `cost`: ответ не дороже $0.002 по `pricing` из manifest.
+- Проверки детерминированные (regex, `contains`, JavaScript) и `llm-rubric`, grader —
+  `deepseek-flash` с `temperature: 0` и выключенным thinking.
+- Golden допускает 1 случайный фейл из 10: LLM недетерминирован.
+- Прогон обоих наборов стоит около $0.015 (без grader).
+
+Provider [evals/provider.ts](evals/provider.ts) берёт промпт, модель и параметры из
+`release.json` и вызывает LLM через `src/llm.ts`: eval проверяет ровно тот релиз, который
+поедет в прод. promptfoo установлен отдельно в `evals/` и не попадает в образ.
+
+Запуск локально (ключ из env или `.env`, его читает promptfoo):
+
+```bash
+npm ci --prefix evals              # один раз
+npm run eval                       # оба набора
+npm run eval -- --suite injection  # один набор
+```
+
+Отчёты: `reports/<набор>.html` и `.json`.
 
 ## Метрики
 
@@ -180,6 +224,7 @@ curl -s localhost:3000/metrics | grep ^agent_
 | `npm test`               | vitest, LLM и Redis заменены фейками          |
 | `npm run build`          | сборка `src` в `dist` (`tsconfig.build.json`) |
 | `npm run check:manifest` | проверка `release.json`, см. выше             |
+| `npm run eval`           | eval gate на promptfoo, см. выше              |
 | `npm run dev`            | API на хосте с перезапуском при изменениях    |
 | `npm run cli`            | консольный клиент                             |
 
@@ -195,7 +240,9 @@ src/history.ts         HistoryStore, формат записей, реализа
 src/api/server.ts      buildApp(deps): маршруты Fastify
 src/api/main.ts        точка входа API
 src/cli/main.ts        REPL-клиент
-scripts/               check-manifest.ts
+scripts/               check-manifest.ts, eval.ts (eval gate)
+evals/                 promptfoo: provider.ts, наборы <evalDataset>/*.yaml
+.github/workflows/     CI
 prompts/               system prompts, выпущенные файлы не меняются
 release.json           release manifest
 Dockerfile             multi-stage сборка образа API

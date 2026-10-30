@@ -176,6 +176,9 @@ bootstrap (make up):
 | `gh` scopes   | нет `workflow`: до push `.github/workflows` выполнить                   |
 |               | `gh auth refresh -s workflow`                                           |
 | Feature flags | flagd: процент и таргетинг по `sessionId`, смена без рестарта пода      |
+| Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
+|               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
+| Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
 
 ## Открытые вопросы
 
