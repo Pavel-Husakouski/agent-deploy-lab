@@ -3,6 +3,7 @@
 
 CLUSTER        := agent-deploy-lab
 KIND_CONFIG    := deploy/kind/cluster.yaml
+KIND_IMAGE     := kindest/node:v1.37.0
 ARGOCD_CHART   := 10.11.6
 ARGOCD_REPO    := https://argoproj.github.io/argo-helm
 IMAGE          := agent-deploy-lab:dev
@@ -24,7 +25,7 @@ cluster:
 	@if kind get clusters | grep -qx '$(CLUSTER)'; then \
 	  echo "cluster $(CLUSTER) уже есть"; \
 	else \
-	  kind create cluster --config $(KIND_CONFIG); \
+	  kind create cluster --config $(KIND_CONFIG) --image $(KIND_IMAGE); \
 	fi
 
 # До этапа 5 образ не в registry: собираем локально и загружаем в ноду kind.
