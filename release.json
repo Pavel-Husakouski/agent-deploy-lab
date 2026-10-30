@@ -1,0 +1,14 @@
+{
+  "version": "0.1.0",
+  "model": {
+    "id": "deepseek-chat",
+    "temperature": 0.3,
+    "maxTokens": 1024,
+    "pricing": { "inputPerMTok": 0.3, "outputPerMTok": 1.2 }
+  },
+  "prompt": {
+    "id": "trainer-v1",
+    "sha256": "622c0c51d54b41222ab4c1e1d27f2f0c1f2fa8df393b9c2674f6455dba359f90"
+  },
+  "evalDataset": "golden-v1"
+}
