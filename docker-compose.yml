@@ -13,27 +13,23 @@ services:
       retries: 10
 
   api:
-    image: node:26-slim
-    working_dir: /app
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: agent-deploy-lab:local
     init: true
-    command: ["sh", "scripts/compose-api.sh"]
     environment:
       # Ключ берётся из окружения пользователя или из .env рядом с этим файлом.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?задайте DEEPSEEK_API_KEY в окружении или в .env}
       REDIS_URL: redis://redis:6379
-      MODEL_ID: ${MODEL_ID:-deepseek-chat}
-      TEMPERATURE: ${TEMPERATURE:-0.3}
-      MAX_TOKENS: ${MAX_TOKENS:-1024}
       PORT: "3000"
     ports:
       - "3000:3000"
-    volumes:
-      - ./:/app
-      - api-node-modules:/app/node_modules
     depends_on:
       redis:
         condition: service_healthy
 
 volumes:
   redis-data:
-  api-node-modules:

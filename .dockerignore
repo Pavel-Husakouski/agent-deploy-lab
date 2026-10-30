@@ -1,0 +1,13 @@
+# В контекст сборки попадает только то, что нужно Dockerfile. Секреты не попадают никогда.
+.env
+.env.*
+*.env
+.git
+.idea
+node_modules
+dist
+test
+scripts
+*.md
+!prompts/*.md
+docker-compose.yml

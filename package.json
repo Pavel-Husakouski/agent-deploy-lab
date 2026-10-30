@@ -9,6 +9,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
     "check:manifest": "tsx scripts/check-manifest.ts",
     "dev": "tsx watch src/api/main.ts",
     "start": "tsx src/api/main.ts",
