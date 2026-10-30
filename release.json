@@ -1,14 +1,14 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "model": {
     "id": "deepseek-flash",
     "temperature": 0.3,
-    "maxTokens": 1024,
+    "maxTokens": 2048,
     "pricing": { "inputPerMTok": 0.3, "outputPerMTok": 1.2 }
   },
   "prompt": {
-    "id": "trainer-v1",
-    "sha256": "622c0c51d54b41222ab4c1e1d27f2f0c1f2fa8df393b9c2674f6455dba359f90"
+    "id": "trainer-v2",
+    "sha256": "cd116d7692552935a49de25313a0c3d268f2de3e775c1b4e39b4b9b30c85b03e"
   },
   "evalDataset": "golden-v1"
 }

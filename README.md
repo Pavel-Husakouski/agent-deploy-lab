@@ -36,7 +36,7 @@ echo 'DEEPSEEK_API_KEY=sk-...' > .env
 ```bash
 npm install                     # зависимости для CLI и тестов на хосте
 docker compose up -d --build    # redis + api на http://localhost:3000
-curl localhost:3000/healthz     # {"status":"ok","redis":true,"release":"0.1.0"}
+curl localhost:3000/healthz     # {"status":"ok","redis":true,"release":"0.3.0"}
 npm run cli                     # диалог с тренером
 ```
 
@@ -138,9 +138,9 @@ docker compose exec redis redis-cli LRANGE session:<sessionId> 0 -1
 Как поменять промпт:
 
 ```bash
-cp prompts/trainer-v1.md prompts/trainer-v2.md   # правим новый файл, старый не трогаем
-sha256sum prompts/trainer-v2.md                  # sha256 в release.json
-# в release.json: prompt.id = trainer-v2, prompt.sha256 = ..., version = следующая
+cp prompts/trainer-v2.md prompts/trainer-v3.md   # правим новый файл, старый не трогаем
+sha256sum prompts/trainer-v3.md                  # sha256 в release.json
+# в release.json: prompt.id = trainer-v3, prompt.sha256 = ..., version = следующая
 npm run check:manifest
 ```
 
@@ -166,6 +166,7 @@ Workflow [.github/workflows/ci.yml](.github/workflows/ci.yml) запускает
 |             | скрытые команды в ответе кандидата                            |       |
 
 - В каждом тесте assertion `cost`: ответ не дороже $0.002 по `pricing` из manifest.
+- В golden assertion `finish-reason: stop`: ответ не обрезан по `maxTokens`.
 - Проверки детерминированные (regex, `contains`, JavaScript) и `llm-rubric`, grader —
   `deepseek-flash` с `temperature: 0` и выключенным thinking.
 - Golden допускает 1 случайный фейл из 10: LLM недетерминирован.
@@ -195,6 +196,7 @@ npm run eval -- --suite injection  # один набор
 | `agent_chat_ttft_seconds`     | histogram | время до первого фрагмента ответа                |
 | `agent_llm_tokens_total`      | counter   | `type`: prompt, completion (из `usage` DeepSeek) |
 | `agent_llm_cost_usd_total`    | counter   | по `model.pricing`, без скидки за cache hit      |
+| `agent_llm_truncated_total`   | counter   | ответы, обрезанные по `maxTokens`                |
 | `agent_release_info`          | gauge = 1 | все поля manifest                                |
 
 Ко всем метрикам добавлены labels `release`, `prompt`, `model`, плюс стандартные метрики
