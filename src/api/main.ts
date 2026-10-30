@@ -1,13 +1,16 @@
-import { readFile } from 'node:fs/promises';
 import { Redis } from 'ioredis';
 import { loadConfig } from '../config.js';
 import { RedisHistoryStore } from '../history.js';
 import { createDeepSeekClient } from '../llm.js';
+import { createMetrics } from '../metrics.js';
+import { loadRelease } from '../release.js';
 import { buildApp } from './server.js';
 
 // Точка входа API: собирает зависимости из конфигурации и запускает HTTP-сервер.
 const config = loadConfig();
-const systemPrompt = await readFile(config.PROMPT_PATH, 'utf8');
+// Manifest и промпт читаются из текущего каталога (корень репозитория или /app в образе).
+const release = await loadRelease();
+const { model } = release.manifest;
 
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
 
@@ -15,12 +18,13 @@ const app = buildApp({
   llm: createDeepSeekClient({
     apiKey: config.DEEPSEEK_API_KEY,
     baseURL: config.DEEPSEEK_BASE_URL,
-    model: config.MODEL_ID,
-    temperature: config.TEMPERATURE,
-    maxTokens: config.MAX_TOKENS,
+    model: model.id,
+    temperature: model.temperature,
+    maxTokens: model.maxTokens,
   }),
   store: new RedisHistoryStore(redis),
-  systemPrompt,
+  release,
+  metrics: createMetrics(release.manifest, { collectDefault: true }),
   logger: { level: process.env['LOG_LEVEL'] ?? 'info' },
 });
 
@@ -39,4 +43,7 @@ process.once('SIGTERM', () => void shutdown('SIGTERM'));
 process.once('SIGINT', () => void shutdown('SIGINT'));
 
 await app.listen({ port: config.PORT, host: config.HOST });
-app.log.info({ model: config.MODEL_ID, prompt: config.PROMPT_PATH }, 'API запущен');
+app.log.info(
+  { release: release.manifest.version, model: model.id, prompt: release.manifest.prompt.id },
+  'API запущен',
+);

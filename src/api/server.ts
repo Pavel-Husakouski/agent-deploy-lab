@@ -2,11 +2,15 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastif
 import { z } from 'zod';
 import { makeRecord, type HistoryStore } from '../history.js';
 import type { ChatMessage, LlmClient } from '../llm.js';
+import { createMetrics, type Metrics } from '../metrics.js';
+import type { Release } from '../release.js';
 
 export interface AppDeps {
   llm: LlmClient;
   store: HistoryStore;
-  systemPrompt: string;
+  release: Release;
+  // Если не передан, создаётся Registry без стандартных метрик процесса.
+  metrics?: Metrics;
   logger?: FastifyServerOptions['logger'];
 }
 
@@ -28,17 +32,27 @@ function sseEvent(data: unknown, event?: string): string {
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: deps.logger ?? false });
+  const { manifest, systemPrompt } = deps.release;
+  const metrics = deps.metrics ?? createMetrics(manifest);
 
   app.get('/healthz', async (_req, reply) => {
     const redisOk = await deps.store.ping();
-    return reply
-      .code(redisOk ? 200 : 503)
-      .send({ status: redisOk ? 'ok' : 'unavailable', redis: redisOk });
+    return reply.code(redisOk ? 200 : 503).send({
+      status: redisOk ? 'ok' : 'unavailable',
+      redis: redisOk,
+      release: manifest.version,
+    });
+  });
+
+  app.get('/metrics', async (_req, reply) => {
+    const body = await metrics.registry.metrics();
+    return reply.type(metrics.registry.contentType).send(body);
   });
 
   app.post('/chat', async (req, reply) => {
     const parsed = ChatRequestSchema.safeParse(req.body);
     if (!parsed.success) {
+      metrics.requests.inc({ status: 'bad_request' });
       return reply.code(400).send({
         error: 'bad_request',
         issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
@@ -52,11 +66,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       history = await deps.store.read(sessionId);
     } catch (err) {
       req.log.error({ err }, 'не удалось прочитать историю');
+      metrics.requests.inc({ status: 'unavailable' });
       return reply.code(503).send({ error: 'history_unavailable' });
     }
 
     const messages: ChatMessage[] = [
-      { role: 'system', content: deps.systemPrompt },
+      { role: 'system', content: systemPrompt },
       ...history.map((r) => ({ role: r.role, content: r.content })),
       { role: 'user', content: message },
     ];
@@ -77,19 +92,33 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     };
     raw.on('close', onClose);
 
+    const endTimer = metrics.duration.startTimer();
+    const endTtft = metrics.ttft.startTimer();
+    let firstDelta = true;
+    let status: 'ok' | 'error' | 'aborted' = 'ok';
     let answer = '';
     try {
-      for await (const delta of deps.llm.streamChat(messages, abort.signal)) {
-        answer += delta;
-        raw.write(sseEvent({ delta }));
+      for await (const event of deps.llm.streamChat(messages, abort.signal)) {
+        if (event.type === 'usage') {
+          metrics.recordUsage(event.usage);
+          continue;
+        }
+        if (firstDelta) {
+          endTtft();
+          firstDelta = false;
+        }
+        answer += event.text;
+        raw.write(sseEvent({ delta: event.text }));
       }
       // Обе реплики сохраняются только после успешного завершения стрима.
       await deps.store.append(sessionId, [userRecord, makeRecord('assistant', answer)]);
       raw.write(sseEvent({}, 'done'));
     } catch (err) {
       if (abort.signal.aborted) {
+        status = 'aborted';
         req.log.warn('клиент отключился до конца ответа, история не сохранена');
       } else {
+        status = 'error';
         req.log.error({ err }, 'ошибка при генерации ответа');
         const text = err instanceof Error ? err.message : String(err);
         raw.write(sseEvent({ message: text }, 'error'));
@@ -97,6 +126,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     } finally {
       raw.off('close', onClose);
       raw.end();
+      metrics.requests.inc({ status });
+      endTimer({ status });
     }
   });
 
