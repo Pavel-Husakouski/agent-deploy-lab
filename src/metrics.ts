@@ -1,6 +1,6 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import type { TokenUsage } from './llm.js';
-import type { ReleaseManifest } from './release.js';
+import { estimateCostUsd, type ReleaseManifest } from './release.js';
 
 export type ChatStatus = 'ok' | 'error' | 'aborted' | 'bad_request' | 'unavailable';
 
@@ -77,7 +77,6 @@ export function createMetrics(
     registers: [registry],
   });
 
-  const { inputPerMTok, outputPerMTok } = manifest.model.pricing;
   return {
     registry,
     requests,
@@ -88,10 +87,7 @@ export function createMetrics(
     recordUsage(usage) {
       tokens.inc({ type: 'prompt' }, usage.promptTokens);
       tokens.inc({ type: 'completion' }, usage.completionTokens);
-      // Скидка за cache hit не учитывается: стоимость — оценка сверху.
-      costUsd.inc(
-        (usage.promptTokens * inputPerMTok + usage.completionTokens * outputPerMTok) / 1e6,
-      );
+      costUsd.inc(estimateCostUsd(usage, manifest.model.pricing));
     },
   };
 }

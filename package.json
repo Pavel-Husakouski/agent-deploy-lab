@@ -11,6 +11,7 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json",
     "check:manifest": "tsx scripts/check-manifest.ts",
+    "eval": "tsx scripts/eval.ts",
     "dev": "tsx watch src/api/main.ts",
     "start": "tsx src/api/main.ts",
     "cli": "tsx src/cli/main.ts"

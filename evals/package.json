@@ -1,0 +1,9 @@
+{
+  "name": "agent-deploy-lab-evals",
+  "private": true,
+  "type": "module",
+  "description": "Инструменты eval отдельно от приложения: promptfoo не попадает в образ и в npm ci API",
+  "devDependencies": {
+    "promptfoo": "0.125.1"
+  }
+}
