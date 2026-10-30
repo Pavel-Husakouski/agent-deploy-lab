@@ -1,6 +1,7 @@
 # agent-deploy-lab: спецификация (черновик)
 
-> **Статус:** утверждён к этапу 1, 2026-10-28. Открытые вопросы в конце файла закрыть к их этапам.
+> **Статус:** утверждён к этапу 1, 2026-10-28; этап 4 готов 2026-10-30. Открытые вопросы
+> в конце файла закрыть к их этапам.
 
 ## Контекст для сессии
 
@@ -179,6 +180,12 @@ bootstrap (make up):
 | Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
+| Prometheus    | chart `prometheus` (только server, без PVC), не kube-prometheus-stack   |
+| Redis в k8s   | свои манифесты (StatefulSet, AOF на PVC), без Bitnami chart             |
+| Образ до эт.5 | `make image`: сборка и `kind load`, тег `dev`, `IfNotPresent`           |
+| agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
+| Доступ        | kind `extraPortMappings`: API 3000, Argo CD 8080, Prometheus 9090       |
+| Ключ в k8s    | `make secret` из `DEEPSEEK_API_KEY` окружения, `.env` не читается       |
 
 ## Открытые вопросы
 

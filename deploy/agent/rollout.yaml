@@ -1,0 +1,60 @@
+# API агента. Rollout вместо Deployment: canary steps и анализ добавит этап 6.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: agent
+  labels:
+    app.kubernetes.io/name: agent
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent
+  strategy:
+    canary: {}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: api
+          image: agent-deploy-lab
+          # Образ загружен в kind через make image, из registry его не тянуть.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: REDIS_URL
+              value: redis://redis:6379
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  # Секрет создаёт make up из переменной окружения, в git его нет.
+                  name: deepseek
+                  key: DEEPSEEK_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          # /healthz отдаёт 503 без Redis: для liveness это не повод перезапускать под.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

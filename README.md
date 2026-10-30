@@ -3,9 +3,10 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Сейчас готов **этап 3**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
-Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Локально через
-`docker compose`.
+Сейчас готов **этап 4**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
+Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально
+через `docker compose` или в kind-кластере, который Argo CD собирает из git
+(см. [Кластер](#кластер)).
 
 Приложение — тренер к интервью: задаёт вопрос по теме доставки агентов, оценивает ответ
 по шкале 0–10, даёт эталонный ответ и задаёт следующий вопрос. Какой system prompt и какая
@@ -51,6 +52,59 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 
 Остановка: `docker compose down` (история сохраняется в volume `redis-data`),
 `docker compose down -v` удаляет и историю.
+
+## Кластер
+
+Тот же агент в kind. Руками ставится только Argo CD, остальное он синхронизирует из
+`deploy/` в git по схеме app-of-apps.
+
+Нужны `docker`, `kind`, `kubectl`, `helm`, `make` и около 3 GB RAM. Порты 3000, 8080 и 9090
+на `127.0.0.1` должны быть свободны, поэтому сначала `docker compose down`.
+
+```bash
+export DEEPSEEK_API_KEY=sk-...   # make читает ключ только из окружения, .env не читает
+make up                          # кластер, образ, секрет, Argo CD, root-app, ожидание
+npm run cli                      # тот же CLI, API на localhost:3000
+make down                        # удалить кластер целиком
+```
+
+| Target                 | Действие                                                       |
+|------------------------|----------------------------------------------------------------|
+| `make up`              | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки  |
+|                        | `deploy/` из ветки до merge (по умолчанию `main`)              |
+| `make down`            | `kind delete cluster`                                          |
+| `make image`           | собрать `agent-deploy-lab:dev`, `kind load`, перезапустить под |
+| `make secret`          | Secret `deepseek` в namespace `agent` из `DEEPSEEK_API_KEY`    |
+| `make status`          | состояние Applications и подов, адреса UI                      |
+| `make argocd-password` | пароль `admin` для Argo CD UI                                  |
+
+| Адрес                   | Что                                         |
+|-------------------------|---------------------------------------------|
+| `http://localhost:3000` | API агента (NodePort 30000)                 |
+| `http://localhost:8080` | Argo CD UI, логин `admin`                   |
+| `http://localhost:9090` | Prometheus, например `agent_release_info`   |
+
+Что синхронизирует Argo CD (`deploy/apps`, Helm chart с Application на компонент):
+
+| Wave | Application     | Источник                                           | Namespace       |
+|------|-----------------|----------------------------------------------------|-----------------|
+| -1   | `argo-rollouts` | chart `argo-rollouts` 2.43.8                       | `argo-rollouts` |
+| -1   | `prometheus`    | chart `prometheus` 29.40.0, только server          | `monitoring`    |
+| 0    | `redis`         | [deploy/redis](deploy/redis): StatefulSet, AOF+PVC | `agent`         |
+| 1    | `agent`         | [deploy/agent](deploy/agent): Rollout, NodePort    | `agent`         |
+
+- У всех Application включены `automated`, `prune` и `selfHeal`: ручная правка в кластере
+  откатывается к состоянию из git.
+- Sync waves работают благодаря health check для `Application` в
+  [argocd-values.yaml](deploy/bootstrap/argocd-values.yaml). Без него agent синхронизировался
+  бы раньше, чем появятся CRD `Rollout`.
+- agent уже `Rollout`, пока без canary steps (они появятся на этапе 6). Под scrape-ится
+  Prometheus по аннотациям `prometheus.io/*`.
+- До этапа 5 образ не берётся из registry: `make image` собирает его и загружает в ноду kind.
+- У Prometheus нет PVC: метрики живут до рестарта пода. История в Redis лежит на PVC и
+  живёт до `make down`.
+- Версии charts, Argo CD и kind node image зафиксированы в `deploy/apps/values.yaml` и
+  `Makefile`.
 
 ## CLI
 
@@ -152,7 +206,8 @@ Workflow [.github/workflows/ci.yml](.github/workflows/ci.yml) запускает
 
 | Job      | Шаги                                                                          |
 |----------|-------------------------------------------------------------------------------|
-| `checks` | typecheck, vitest, `check:manifest` против base ветки PR, `docker build`      |
+| `checks` | typecheck, vitest, `check:manifest` против base ветки PR, kubeconform для     |
+|          | `deploy/`, `docker build`                                                     |
 | `eval`   | `npm run eval`: наборы promptfoo, итог в Job Summary, отчёты в artifacts      |
 
 `eval` использует секрет репозитория `DEEPSEEK_API_KEY`. Наборы лежат в
@@ -242,6 +297,11 @@ src/history.ts         HistoryStore, формат записей, реализа
 src/api/server.ts      buildApp(deps): маршруты Fastify
 src/api/main.ts        точка входа API
 src/cli/main.ts        REPL-клиент
+deploy/kind/           конфиг kind-кластера
+deploy/bootstrap/      values Argo CD и root-app (app-of-apps)
+deploy/apps/           Helm chart: Application на каждый компонент
+deploy/redis/, agent/  манифесты Redis и агента
+Makefile               make up / down и вспомогательные target-ы
 scripts/               check-manifest.ts, eval.ts (eval gate)
 evals/                 promptfoo: provider.ts, наборы <evalDataset>/*.yaml
 .github/workflows/     CI

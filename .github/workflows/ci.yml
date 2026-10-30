@@ -42,6 +42,22 @@ jobs:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: npm run check:manifest -- --base "$BASE"
 
+      # Манифесты deploy/ валидны: схемы k8s и CRD Argo (Application, Rollout).
+      - name: kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin kubeconform
+          crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          {
+            helm template deploy/apps
+            echo '---'
+            cat deploy/bootstrap/root-app.yaml
+            echo '---'
+            kubectl kustomize deploy/agent
+            echo '---'
+            cat deploy/redis/*.yaml
+          } | kubeconform -strict -summary -schema-location default -schema-location "$crds"
+
       - name: release version
         id: release
         run: echo "version=$(node -p "require('./release.json').version")" >> "$GITHUB_OUTPUT"
