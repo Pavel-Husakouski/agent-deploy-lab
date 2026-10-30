@@ -9,7 +9,7 @@ function manifest(overrides: Partial<ReleaseManifest> = {}): ReleaseManifest {
   return {
     version: '0.1.0',
     model: {
-      id: 'deepseek-chat',
+      id: 'deepseek-flash',
       temperature: 0.3,
       maxTokens: 1024,
       pricing: { inputPerMTok: 0.3, outputPerMTok: 1.2 },

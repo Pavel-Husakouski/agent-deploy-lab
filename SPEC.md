@@ -52,7 +52,7 @@
 ```json
 {
   "version": "1.2.0",
-  "model": { "id": "deepseek-chat", "temperature": 0.3, "maxTokens": 1024 },
+  "model": { "id": "deepseek-flash", "temperature": 0.3, "maxTokens": 1024 },
   "prompt": { "id": "trainer-v3", "sha256": "…" },
   "evalDataset": "golden-v1"
 }
@@ -94,7 +94,7 @@ bootstrap (make up):
 | Язык, runtime       | TypeScript, Node.js 26                                             |
 | HTTP                | Fastify                                                            |
 | Тесты               | vitest (LLM замокан)                                               |
-| Eval, red team      | promptfoo, provider `deepseek:deepseek-chat`, grader тоже DeepSeek |
+| Eval, red team      | promptfoo, provider `deepseek:deepseek-flash`, grader на DeepSeek  |
 | Образы              | Docker, GHCR                                                       |
 | CI                  | GitHub Actions                                                     |
 | Кластер             | kind                                                               |
