@@ -22,6 +22,10 @@ defaultTest:
     - type: cost
       threshold: 0.002
       metric: cost
+    # Ответ не обрезан по maxTokens: иначе разбор теряет последние разделы.
+    - type: finish-reason
+      value: stop
+      metric: truncation
 
 # Вопрос тренера, на который отвечает кандидат в кейсах с историей.
 x-history-manifest: &history-manifest

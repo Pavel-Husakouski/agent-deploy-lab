@@ -11,6 +11,7 @@ export interface Metrics {
   ttft: Histogram;
   tokens: Counter<'type'>;
   costUsd: Counter;
+  truncated: Counter;
   recordUsage(usage: TokenUsage): void;
 }
 
@@ -77,6 +78,12 @@ export function createMetrics(
     registers: [registry],
   });
 
+  const truncated = new Counter({
+    name: 'agent_llm_truncated_total',
+    help: 'Ответы LLM, обрезанные по maxTokens (finish_reason=length)',
+    registers: [registry],
+  });
+
   return {
     registry,
     requests,
@@ -84,6 +91,7 @@ export function createMetrics(
     ttft,
     tokens,
     costUsd,
+    truncated,
     recordUsage(usage) {
       tokens.inc({ type: 'prompt' }, usage.promptTokens);
       tokens.inc({ type: 'completion' }, usage.completionTokens);

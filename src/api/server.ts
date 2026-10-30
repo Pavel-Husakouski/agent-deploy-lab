@@ -103,6 +103,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
           metrics.recordUsage(event.usage);
           continue;
         }
+        if (event.type === 'finish') {
+          if (event.reason === 'length') {
+            metrics.truncated.inc();
+            req.log.warn('ответ LLM обрезан по maxTokens');
+          }
+          continue;
+        }
         if (firstDelta) {
           endTtft();
           firstDelta = false;
