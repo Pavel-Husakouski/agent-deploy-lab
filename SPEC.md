@@ -188,7 +188,7 @@ bootstrap (make up):
 | Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
 | Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
 | agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
-| Доступ        | kind `extraPortMappings`: API 3000, Argo CD 8080, Prometheus 9090       |
+| Доступ        | kind `extraPortMappings`: API 13000, Argo CD 18080, Prometheus 19090    |
 | Ключ в k8s    | `make secret` из `DEEPSEEK_API_KEY` окружения, `.env` не читается       |
 
 ## Открытые вопросы

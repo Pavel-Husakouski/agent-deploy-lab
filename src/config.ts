@@ -6,7 +6,7 @@ const ConfigSchema = z.object({
   DEEPSEEK_API_KEY: z.string().min(1, 'DEEPSEEK_API_KEY не задан'),
   DEEPSEEK_BASE_URL: z.url().default('https://api.deepseek.com'),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  PORT: z.coerce.number().int().min(1).max(65535).default(13000),
   HOST: z.string().default('0.0.0.0'),
 });
 

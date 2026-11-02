@@ -24,9 +24,9 @@ services:
       # Ключ берётся из окружения пользователя или из .env рядом с этим файлом.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?задайте DEEPSEEK_API_KEY в окружении или в .env}
       REDIS_URL: redis://redis:6379
-      PORT: "3000"
+      PORT: "13000"
     ports:
-      - "3000:3000"
+      - "13000:13000"
     depends_on:
       redis:
         condition: service_healthy

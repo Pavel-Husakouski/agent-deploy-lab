@@ -19,7 +19,7 @@ spec:
         app.kubernetes.io/name: agent
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "3000"
+        prometheus.io/port: "13000"
         prometheus.io/path: /metrics
     spec:
       containers:
@@ -29,10 +29,10 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 3000
+              containerPort: 13000
           env:
             - name: PORT
-              value: "3000"
+              value: "13000"
             - name: REDIS_URL
               value: redis://redis:6379
             - name: DEEPSEEK_API_KEY

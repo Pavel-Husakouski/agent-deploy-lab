@@ -5,15 +5,15 @@ name: agent-deploy-lab
 nodes:
   - role: control-plane
     extraPortMappings:
-      # agent API: CLI ходит на localhost:3000 без изменений
+      # agent API: CLI ходит на localhost:13000 без изменений
       - containerPort: 30000
-        hostPort: 3000
+        hostPort: 13000
         listenAddress: 127.0.0.1
       # Argo CD UI
       - containerPort: 30080
-        hostPort: 8080
+        hostPort: 18080
         listenAddress: 127.0.0.1
       # Prometheus UI
       - containerPort: 30090
-        hostPort: 9090
+        hostPort: 19090
         listenAddress: 127.0.0.1

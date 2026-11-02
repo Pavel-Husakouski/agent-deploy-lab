@@ -10,7 +10,7 @@ spec:
     app.kubernetes.io/name: agent
   ports:
     - name: http
-      port: 3000
+      port: 13000
       targetPort: http
-      # kind пробрасывает 30000 на localhost:3000
+      # kind пробрасывает 30000 на localhost:13000
       nodePort: 30000
