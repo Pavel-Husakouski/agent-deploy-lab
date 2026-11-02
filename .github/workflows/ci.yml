@@ -64,7 +64,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      # Сборка образа без push: Dockerfile не сломан. Push в GHCR — этап 5.
+      # Сборка образа без push: Dockerfile не сломан. Push в GHCR — в job release.
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -109,3 +109,77 @@ jobs:
           name: eval-reports
           path: reports/
           if-no-files-found: ignore
+
+  # Только после зелёных checks и eval на main: образ в GHCR и новый тег в deploy/.
+  # Дальше Argo CD сам увидит коммит. Старый прогон отменяется по concurrency выше,
+  # поэтому старый тег не перезапишет новый.
+  release:
+    name: release
+    needs: [checks, eval]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # DEPLOY_KEY лежит в окружении, доступном только для main: PR-ветки его не получат.
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/pavel-husakouski/agent-deploy-lab
+    steps:
+      # Deploy key нужен для push: у него bypass в ruleset, у GITHUB_TOKEN нет.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: image tag
+        id: tag
+        run: |
+          version=$(node -p "require('./release.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$version-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+          build-args: |
+            VERSION=${{ steps.tag.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # [skip ci]: push с deploy key запускает workflow, без этого получится цикл.
+      - name: commit tag to deploy/
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout -B main origin/main
+          yq -i '.images[0].newName = strenv(IMAGE) | .images[0].newTag = strenv(TAG)' \
+            deploy/agent/kustomization.yaml
+          if git diff --quiet; then
+            echo "тег $TAG уже в deploy/"
+            exit 0
+          fi
+          git commit -am "chore(deploy): agent $TAG [skip ci]"
+          # Между fetch и push мог пройти другой merge.
+          for attempt in 1 2 3; do
+            git push origin main && exit 0
+            sleep $((attempt * 5))
+            git pull --rebase origin main
+          done
+          exit 1
