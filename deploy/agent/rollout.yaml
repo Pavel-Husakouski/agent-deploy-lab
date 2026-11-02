@@ -25,7 +25,7 @@ spec:
       containers:
         - name: api
           image: agent-deploy-lab
-          # Образ загружен в kind через make image, из registry его не тянуть.
+          # Имя и тег из GHCR подставляет kustomization.yaml, теги неизменяемы (версия + sha).
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
