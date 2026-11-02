@@ -3,7 +3,7 @@ kind: Kustomization
 resources:
   - rollout.yaml
   - service.yaml
-# Тег образа: до этапа 5 локальный образ из make image, на этапе 5 его будет менять CI.
+# Образ и тег меняет CI (job release в ci.yml) после каждого merge в main.
 images:
   - name: agent-deploy-lab
     newTag: 0.3.0-bca0a54

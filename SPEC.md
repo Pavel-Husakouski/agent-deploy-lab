@@ -1,6 +1,6 @@
 # agent-deploy-lab: спецификация (черновик)
 
-> **Статус:** утверждён к этапу 1, 2026-10-28; этап 4 готов 2026-10-30. Открытые вопросы
+> **Статус:** утверждён к этапу 1, 2026-10-28; этап 5 готов 2026-11-02. Открытые вопросы
 > в конце файла закрыть к их этапам.
 
 ## Контекст для сессии
@@ -144,7 +144,9 @@ bootstrap (make up):
 | GitHub Actions    | CI, сборка образа, bump тега           | ничего, workflow лежат в репо     |
 | GHCR              | хранение образов                       | ничего, push через `GITHUB_TOKEN` |
 | Secrets           | `DEEPSEEK_API_KEY` для promptfoo       | вручную или `gh secret set`       |
-| Branch protection | merge только после зелёного eval gate  | правило на `main`                 |
+| Ruleset на `main` | merge только после зелёного eval gate  | bypass только для deploy key      |
+| Deploy key        | push тега в `main` из job `release`    | write-ключ, секрет `DEPLOY_KEY`   |
+| Окружение         | `DEPLOY_KEY` доступен только `main`    | `release`, branch policy `main`   |
 
 **Рекомендация: public репозиторий.**
 
@@ -163,6 +165,7 @@ bootstrap (make up):
   кластере (создаётся вручную или `make up` из переменной окружения пользователя, не в git).
 - В репозитории нет ключей, `.env` в `.gitignore`, `terraform.tfstate` в `.gitignore`
   (для этапа 9).
+- `DEPLOY_KEY` (write deploy key) лежит только в окружении `release`, PR-ветки его не получают.
 - Ассистент (Claude) ключ не читает и не видит: пользователь кладёт его сам.
 
 ## Решения
@@ -182,7 +185,8 @@ bootstrap (make up):
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
 | Prometheus    | chart `prometheus` (только server, без PVC), не kube-prometheus-stack   |
 | Redis в k8s   | свои манифесты (StatefulSet, AOF на PVC), без Bitnami chart             |
-| Образ до эт.5 | `make image`: сборка и `kind load`, тег `dev`, `IfNotPresent`           |
+| Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
+| Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
 | agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
 | Доступ        | kind `extraPortMappings`: API 3000, Argo CD 8080, Prometheus 9090       |
 | Ключ в k8s    | `make secret` из `DEEPSEEK_API_KEY` окружения, `.env` не читается       |
