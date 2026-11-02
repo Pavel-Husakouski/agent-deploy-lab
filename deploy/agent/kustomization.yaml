@@ -6,4 +6,5 @@ resources:
 # Тег образа: до этапа 5 локальный образ из make image, на этапе 5 его будет менять CI.
 images:
   - name: agent-deploy-lab
-    newTag: dev
+    newTag: 0.3.0-bca0a54
+    newName: ghcr.io/pavel-husakouski/agent-deploy-lab
