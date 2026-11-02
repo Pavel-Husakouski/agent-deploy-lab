@@ -6,7 +6,6 @@ KIND_CONFIG    := deploy/kind/cluster.yaml
 KIND_IMAGE     := kindest/node:v1.37.0
 ARGOCD_CHART   := 10.11.6
 ARGOCD_REPO    := https://argoproj.github.io/argo-helm
-IMAGE          := agent-deploy-lab:dev
 # Ветка, из которой Argo CD берёт deploy/: make up REVISION=stage-4
 REVISION       ?= main
 WAIT_TIMEOUT   ?= 600
@@ -14,9 +13,9 @@ WAIT_TIMEOUT   ?= 600
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM    := helm --kube-context kind-$(CLUSTER)
 
-.PHONY: up down cluster image secret argocd root wait status argocd-password
+.PHONY: up down cluster secret argocd root wait status argocd-password
 
-up: cluster image secret argocd root wait status
+up: cluster secret argocd root wait status
 
 down:
 	kind delete cluster --name $(CLUSTER)
@@ -26,18 +25,6 @@ cluster:
 	  echo "cluster $(CLUSTER) уже есть"; \
 	else \
 	  kind create cluster --config $(KIND_CONFIG) --image $(KIND_IMAGE); \
-	fi
-
-# До этапа 5 образ не в registry: собираем локально и загружаем в ноду kind.
-image:
-	docker build -t $(IMAGE) \
-	  --build-arg VERSION=$$(node -p "require('./release.json').version") \
-	  --build-arg GIT_SHA=$$(git rev-parse --short HEAD) .
-	kind load docker-image $(IMAGE) --name $(CLUSTER)
-	@# Тег тот же, поэтому после пересборки под перезапускается явно.
-	@if $(KUBECTL) -n agent get rollout agent >/dev/null 2>&1; then \
-	  $(KUBECTL) -n agent patch rollout agent --type merge \
-	    -p "{\"spec\":{\"restartAt\":\"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}"; \
 	fi
 
 secret:
