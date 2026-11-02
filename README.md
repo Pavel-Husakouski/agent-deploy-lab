@@ -3,10 +3,11 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Сейчас готов **этап 4**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
+Сейчас готов **этап 5**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
 Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально
 через `docker compose` или в kind-кластере, который Argo CD собирает из git
-(см. [Кластер](#кластер)).
+(см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
+коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
 
 Приложение — тренер к интервью: задаёт вопрос по теме доставки агентов, оценивает ответ
 по шкале 0–10, даёт эталонный ответ и задаёт следующий вопрос. Какой system prompt и какая
@@ -63,7 +64,7 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...   # make читает ключ только из окружения, .env не читает
-make up                          # кластер, образ, секрет, Argo CD, root-app, ожидание
+make up                          # кластер, секрет, Argo CD, root-app, ожидание
 npm run cli                      # тот же CLI, API на localhost:3000
 make down                        # удалить кластер целиком
 ```
@@ -73,7 +74,6 @@ make down                        # удалить кластер целиком
 | `make up`              | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки  |
 |                        | `deploy/` из ветки до merge (по умолчанию `main`)              |
 | `make down`            | `kind delete cluster`                                          |
-| `make image`           | собрать `agent-deploy-lab:dev`, `kind load`, перезапустить под |
 | `make secret`          | Secret `deepseek` в namespace `agent` из `DEEPSEEK_API_KEY`    |
 | `make status`          | состояние Applications и подов, адреса UI                      |
 | `make argocd-password` | пароль `admin` для Argo CD UI                                  |
@@ -100,7 +100,7 @@ make down                        # удалить кластер целиком
   бы раньше, чем появятся CRD `Rollout`.
 - agent уже `Rollout`, пока без canary steps (они появятся на этапе 6). Под scrape-ится
   Prometheus по аннотациям `prometheus.io/*`.
-- До этапа 5 образ не берётся из registry: `make image` собирает его и загружает в ноду kind.
+- Образ берётся из GHCR, тег в `deploy/agent/kustomization.yaml` меняет CI, см. [Релиз](#релиз).
 - У Prometheus нет PVC: метрики живут до рестарта пода. История в Redis лежит на PVC и
   живёт до `make down`.
 - Версии charts, Argo CD и kind node image зафиксированы в `deploy/apps/values.yaml` и
@@ -174,7 +174,7 @@ docker compose exec redis redis-cli LRANGE session:<sessionId> 0 -1
 | `prompt.sha256` | sha256 файла промпта                                          |
 | `evalDataset`   | eval dataset для gate: каталог `evals/<id>/`                  |
 
-Код версионируется тегом образа (версия + git sha, этап 5), поэтому правка кода bump не
+Код версионируется тегом образа (версия + git sha), поэтому правка кода bump не
 требует. API при старте сверяет sha256 промпта с manifest и не запускается при расхождении.
 
 `npm run check:manifest` сравнивает рабочее дерево с base ref (по умолчанию `origin/main`,
@@ -201,8 +201,8 @@ npm run check:manifest
 ## CI и eval gate
 
 Workflow [.github/workflows/ci.yml](.github/workflows/ci.yml) запускается на каждый PR в
-`main` и на push в `main`. Оба job — required status checks: пока они не зелёные, merge
-заблокирован (branch protection, в том числе для админов).
+`main` и на push в `main`. `checks` и `eval` — required status checks: пока они не зелёные,
+merge заблокирован (ruleset, в том числе для админов). Job `release` описан в [Релиз](#релиз).
 
 | Job      | Шаги                                                                          |
 |----------|-------------------------------------------------------------------------------|
@@ -240,6 +240,30 @@ npm run eval -- --suite injection  # один набор
 ```
 
 Отчёты: `reports/<набор>.html` и `.json`.
+
+## Релиз
+
+Job `release` в [ci.yml](.github/workflows/ci.yml) запускается только на push в `main` и только
+после зелёных `checks` и `eval`:
+
+1. собирает образ и пушит его в GHCR с тегом `<version>-<sha7>`:
+   `ghcr.io/pavel-husakouski/agent-deploy-lab:0.3.0-bca0a54`;
+2. меняет `newName` и `newTag` в `deploy/agent/kustomization.yaml` и коммитит в `main` от
+   `github-actions[bot]` с `[skip ci]`;
+3. Argo CD замечает коммит при опросе git (несколько минут), Rollout заменяет под.
+
+| Настройка         | Зачем                                                               |
+|-------------------|---------------------------------------------------------------------|
+| Ruleset на `main` | PR и required checks для всех, bypass только у deploy key           |
+| Deploy key        | push коммита с тегом: у `GITHUB_TOKEN` нет bypass                   |
+| Окружение         | `release` хранит секрет `DEPLOY_KEY`, доступно только для `main`    |
+| `GITHUB_TOKEN`    | push образа, `packages: write` есть только у job `release`          |
+
+- `[skip ci]` нужен, потому что push с deploy key запускает workflow: иначе будет цикл.
+- Пакет в GHCR public: кластер скачивает образ без `imagePullSecret`.
+- Каждый bump делает открытые PR устаревшими (strict checks), их надо обновить из `main`.
+- Проверить образ в кластере до merge нельзя: Argo CD вернёт версию из git (`selfHeal`).
+  Локальная проверка: `docker compose up -d --build`.
 
 ## Метрики
 
