@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 // Консольный клиент: REPL на readline, ответ API печатается по мере прихода SSE-событий.
-const API_URL = process.env['API_URL'] ?? 'http://localhost:3000';
+const API_URL = process.env['API_URL'] ?? 'http://localhost:13000';
 const STATE_DIR = join(homedir(), '.agent-deploy-lab');
 const SESSION_FILE = join(STATE_DIR, 'session');
 

@@ -28,5 +28,5 @@ COPY --from=build /app/dist ./dist
 COPY package.json release.json ./
 COPY prompts ./prompts
 USER node
-EXPOSE 3000
+EXPOSE 13000
 CMD ["node", "dist/api/main.js"]

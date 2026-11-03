@@ -37,8 +37,8 @@ echo 'DEEPSEEK_API_KEY=sk-...' > .env
 
 ```bash
 npm install                     # зависимости для CLI и тестов на хосте
-docker compose up -d --build    # redis + api на http://localhost:3000
-curl localhost:3000/healthz     # {"status":"ok","redis":true,"release":"0.3.0"}
+docker compose up -d --build    # redis + api на http://localhost:13000
+curl localhost:13000/healthz    # {"status":"ok","redis":true,"release":"0.3.0"}
 npm run cli                     # диалог с тренером
 ```
 
@@ -59,13 +59,13 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 Тот же агент в kind. Руками ставится только Argo CD, остальное он синхронизирует из
 `deploy/` в git по схеме app-of-apps.
 
-Нужны `docker`, `kind`, `kubectl`, `helm`, `make` и около 3 GB RAM. Порты 3000, 8080 и 9090
+Нужны `docker`, `kind`, `kubectl`, `helm`, `make` и около 3 GB RAM. Порты 13000, 18080 и 19090
 на `127.0.0.1` должны быть свободны, поэтому сначала `docker compose down`.
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...   # make читает ключ только из окружения, .env не читает
 make up                          # кластер, секрет, Argo CD, root-app, ожидание
-npm run cli                      # тот же CLI, API на localhost:3000
+npm run cli                      # тот же CLI, API на localhost:13000
 make down                        # удалить кластер целиком
 ```
 
@@ -78,11 +78,11 @@ make down                        # удалить кластер целиком
 | `make status`          | состояние Applications и подов, адреса UI                      |
 | `make argocd-password` | пароль `admin` для Argo CD UI                                  |
 
-| Адрес                   | Что                                         |
-|-------------------------|---------------------------------------------|
-| `http://localhost:3000` | API агента (NodePort 30000)                 |
-| `http://localhost:8080` | Argo CD UI, логин `admin`                   |
-| `http://localhost:9090` | Prometheus, например `agent_release_info`   |
+| Адрес                    | Что                                         |
+|--------------------------|---------------------------------------------|
+| `http://localhost:13000` | API агента (NodePort 30000)                 |
+| `http://localhost:18080` | Argo CD UI, логин `admin`                   |
+| `http://localhost:19090` | Prometheus, например `agent_release_info`   |
 
 Что синхронизирует Argo CD (`deploy/apps`, Helm chart с Application на компонент):
 
@@ -114,7 +114,7 @@ make down                        # удалить кластер целиком
 | `/exit`   | выйти (или Ctrl+D)             |
 | остальное | сообщение тренеру              |
 
-- адрес API берётся из `API_URL`, по умолчанию `http://localhost:3000`;
+- адрес API берётся из `API_URL`, по умолчанию `http://localhost:13000`;
 - `sessionId` (uuid) хранится в `~/.agent-deploy-lab/session` и переживает перезапуск CLI.
 
 ## API
@@ -142,7 +142,7 @@ data: {}
 Пример без CLI:
 
 ```bash
-curl -N localhost:3000/chat -H 'content-type: application/json' \
+curl -N localhost:13000/chat -H 'content-type: application/json' \
   -d '{"sessionId":"demo","message":"начнём"}'
 ```
 
@@ -283,7 +283,7 @@ Job `release` в [ci.yml](.github/workflows/ci.yml) запускается то�
 (`stream_options.include_usage`).
 
 ```bash
-curl -s localhost:3000/metrics | grep ^agent_
+curl -s localhost:13000/metrics | grep ^agent_
 ```
 
 ## Конфигурация API
@@ -295,7 +295,7 @@ curl -s localhost:3000/metrics | grep ^agent_
 | `DEEPSEEK_API_KEY`  | —                          | обязательна                      |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | endpoint OpenAI-совместимого API |
 | `REDIS_URL`         | `redis://localhost:6379`   | в compose `redis://redis:6379`   |
-| `PORT`              | `3000`                     |                                  |
+| `PORT`              | `13000`                    |                                  |
 
 ## Разработка
 

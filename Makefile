@@ -60,9 +60,9 @@ wait:
 status:
 	@$(KUBECTL) -n argocd get applications
 	@$(KUBECTL) get pods -n agent
-	@echo "API:        http://localhost:3000"
-	@echo "Argo CD UI: http://localhost:8080 (admin, пароль: make argocd-password)"
-	@echo "Prometheus: http://localhost:9090"
+	@echo "API:        http://localhost:13000"
+	@echo "Argo CD UI: http://localhost:18080 (admin, пароль: make argocd-password)"
+	@echo "Prometheus: http://localhost:19090"
 
 argocd-password:
 	@$(KUBECTL) -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' \
