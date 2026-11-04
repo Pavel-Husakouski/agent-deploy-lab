@@ -13,7 +13,7 @@ import { estimateCostUsd, loadRelease } from '../src/release.js';
 //
 // Vars теста:
 //   role — название роли, те же правила формата, что в API;
-//   mode — режим хода: question, clarify или answer;
+//   mode — режим хода: question, clarify, answer или discuss;
 //   history — предыдущие реплики диалога [{ role: 'user' | 'assistant', content }], опционально;
 //   message — сообщение пользователя (оно же prompt в конфиге promptfoo), в question не нужно.
 
@@ -47,8 +47,8 @@ function parseHistory(value: unknown): { role: 'user' | 'assistant'; content: st
 
 function parseTurn(mode: unknown, message: string): ChatTurn {
   if (mode === 'question') return { mode };
-  if (mode === 'clarify' || mode === 'answer') return { mode, message };
-  throw new Error('vars.mode: ожидается question, clarify или answer');
+  if (mode === 'clarify' || mode === 'answer' || mode === 'discuss') return { mode, message };
+  throw new Error('vars.mode: ожидается question, clarify, answer или discuss');
 }
 
 export default class TrainerReleaseProvider {
