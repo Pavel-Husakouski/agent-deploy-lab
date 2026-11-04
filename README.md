@@ -137,6 +137,7 @@ Enter — следующий вопрос, "? текст" — спросить �
 | `/exit`            | выйти (или Ctrl+D)             | выйти (или Ctrl+D)                 |
 
 - `?` считается только первым символом: `что такое SQS?` будет ответом.
+- Новый вопрос печатается жирным, кроме вывода в файл или pipe и заданного `NO_COLOR`.
 - Роль спрашивается на старте, Enter оставляет последнюю. `npm run cli -- --role "Data Engineer"`
   запускает без вопроса. Роль хранится в `~/.agent-deploy-lab/role`.
 - Каждый вопрос — новая сессия: контекст живёт, пока идут уточнения, а Enter после разбора его
@@ -366,6 +367,7 @@ src/api/server.ts      buildApp(deps): маршруты Fastify
 src/api/main.ts        точка входа API
 src/cli/main.ts        REPL-клиент
 src/cli/input.ts       разбор ввода и выбор действия по этапу тренировки
+src/cli/style.ts       жирный текст для терминала
 deploy/kind/           конфиг kind-кластера
 deploy/bootstrap/      values Argo CD и root-app (app-of-apps)
 deploy/apps/           Helm chart: Application на каждый компонент
