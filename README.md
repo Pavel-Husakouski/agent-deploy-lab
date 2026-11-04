@@ -9,8 +9,8 @@ Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на pr
 (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
 коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
 
-Приложение — тренер к интервью: задаёт вопрос по теме доставки агентов, оценивает ответ
-по шкале 0–10, даёт эталонный ответ и задаёт следующий вопрос. Какой system prompt и какая
+Приложение — тренер к интервью на роль, которую выбирает клиент: задаёт вопрос, поясняет его
+по запросу, оценивает ответ по шкале 0–10 и даёт эталонный ответ. Какой system prompt и какая
 модель используются, задаёт [release.json](release.json).
 
 ## Требования
@@ -108,22 +108,53 @@ make down                        # удалить кластер целиком
 
 ## CLI
 
-| Команда   | Действие                       |
-|-----------|--------------------------------|
-| `/new`    | начать новую сессию            |
-| `/exit`   | выйти (или Ctrl+D)             |
-| остальное | сообщение тренеру              |
+```text
+$ npm run cli
+Роль [Node AWS Developer]:
 
-- адрес API берётся из `API_URL`, по умолчанию `http://localhost:13000`;
-- `sessionId` (uuid) хранится в `~/.agent-deploy-lab/session` и переживает перезапуск CLI.
+─── новый вопрос, роль: Node AWS Developer ───
+Как обеспечить идемпотентность Lambda при повторной доставке из SQS?
+> ? что значит повторная доставка
+SQS гарантирует доставку как минимум один раз...
+> Использую условную запись в DynamoDB...
+**Оценка:** 7/10 ...
+
+─── новый вопрос, роль: Node AWS Developer ───
+```
+
+| Ввод               | Действие                                                      |
+|--------------------|---------------------------------------------------------------|
+| `? текст`          | уточнение: модель поясняет вопрос, без оценки и без эталона   |
+| текст без `?`      | ответ: разбор с оценкой, затем новый вопрос в новой сессии    |
+| `/new`             | пропустить вопрос и получить другой                           |
+| `/role <название>` | сменить роль и получить новый вопрос                          |
+| `/exit`            | выйти (или Ctrl+D)                                            |
+
+- `?` считается только первым символом: `что такое SQS?` будет ответом.
+- Роль спрашивается на старте, Enter оставляет последнюю. `npm run cli -- --role "Data Engineer"`
+  запускает без вопроса. Роль хранится в `~/.agent-deploy-lab/role`.
+- Каждый вопрос — новая сессия: из прошлой переиспользуется только название роли. Контекст
+  короткий, но модель не видит прошлые вопросы, поэтому они могут повторяться, а сложность сама
+  не растёт. Уровень можно задать в роли: `Senior Node AWS Developer`.
+- Адрес API берётся из `API_URL`, по умолчанию `http://localhost:13000`.
 
 ## API
 
 | Метод  | Путь       | Описание                                                       |
 |--------|------------|----------------------------------------------------------------|
-| `POST` | `/chat`    | тело `{ sessionId, message }`, ответ — поток SSE               |
+| `POST` | `/chat`    | тело `{ sessionId, role, mode, message? }`, ответ — поток SSE  |
 | `GET`  | `/healthz` | `PING` в Redis: `200` если Redis отвечает, иначе `503`         |
 | `GET`  | `/metrics` | метрики в формате Prometheus, см. [Метрики](#метрики)          |
+
+| `mode`     | История сессии | `message`   | Что делает модель                      |
+|------------|----------------|-------------|----------------------------------------|
+| `question` | пустая         | не передать | задаёт один вопрос                     |
+| `clarify`  | есть вопрос    | обязателен  | поясняет условие и термины, без оценки |
+| `answer`   | есть вопрос    | обязателен  | оценивает ответ, без нового вопроса    |
+
+`role` — от 2 до 80 символов: буквы, цифры, пробел и `+ # . / ( ) -`. Роль передаётся в каждом
+запросе и не хранится на сервере. Режим, не подходящий к истории сессии, получает `409`:
+`session_not_empty` или `no_question`.
 
 Поток `/chat`:
 
@@ -143,13 +174,13 @@ data: {}
 
 ```bash
 curl -N localhost:13000/chat -H 'content-type: application/json' \
-  -d '{"sessionId":"demo","message":"начнём"}'
+  -d '{"sessionId":"demo","role":"Node AWS Developer","mode":"question"}'
 ```
 
 ## State
 
-История сессии — Redis list по ключу `session:{sessionId}`, TTL 7 дней продлевается при
-каждой записи. Элемент списка — JSON:
+История сессии (один вопрос, уточнения к нему и ответ) — Redis list по ключу
+`session:{sessionId}`, TTL 7 дней продлевается при каждой записи. Элемент списка — JSON:
 
 ```json
 { "schemaVersion": 1, "role": "user", "content": "...", "ts": "2026-10-28T12:00:00.000Z" }
@@ -175,7 +206,8 @@ docker compose exec redis redis-cli LRANGE session:<sessionId> 0 -1
 | `evalDataset`   | eval dataset для gate: каталог `evals/<id>/`                  |
 
 Код версионируется тегом образа (версия + git sha), поэтому правка кода bump не
-требует. API при старте сверяет sha256 промпта с manifest и не запускается при расхождении.
+требует. API при старте сверяет sha256 промпта с manifest и не запускается при расхождении или если
+в промпте нет плейсхолдеров `{{role}}` и `{{mode}}`.
 
 `npm run check:manifest` сравнивает рабочее дерево с base ref (по умолчанию `origin/main`,
 другой: `npm run check:manifest -- --base HEAD`) и падает, если:
@@ -192,9 +224,9 @@ docker compose exec redis redis-cli LRANGE session:<sessionId> 0 -1
 Как поменять промпт:
 
 ```bash
-cp prompts/trainer-v2.md prompts/trainer-v3.md   # правим новый файл, старый не трогаем
-sha256sum prompts/trainer-v3.md                  # sha256 в release.json
-# в release.json: prompt.id = trainer-v3, prompt.sha256 = ..., version = следующая
+cp prompts/trainer-v3.md prompts/trainer-v4.md   # правим новый файл, старый не трогаем
+sha256sum prompts/trainer-v4.md                  # sha256 в release.json
+# в release.json: prompt.id = trainer-v4, prompt.sha256 = ..., version = следующая
 npm run check:manifest
 ```
 
@@ -215,17 +247,18 @@ merge заблокирован (ruleset, в том числе для админ�
 
 | Набор       | Что проверяет                                                 | Порог |
 |-------------|---------------------------------------------------------------|-------|
-| `golden`    | формат разбора, оценка сильного/слабого ответа, «не знаю»,    | 90%   |
-|             | возврат к теме, русский язык, неповтор вопросов               |       |
-| `injection` | утечка system prompt, смена роли, подмена оценки,             | 100%  |
-|             | скрытые команды в ответе кандидата                            |       |
+| `golden`    | вопрос по роли, уточнение без оценки и эталона, формат        | 90%   |
+|             | разбора, оценка сильного/слабого ответа, «не знаю», возврат   |       |
+|             | к теме, русский язык                                          |       |
+| `injection` | утечка system prompt, подмена оценки и режима, скрытые        | 100%  |
+|             | команды в ответе, команды в названии роли                     |       |
 
 - В каждом тесте assertion `cost`: ответ не дороже $0.002 по `pricing` из manifest.
 - В golden assertion `finish-reason: stop`: ответ не обрезан по `maxTokens`.
 - Проверки детерминированные (regex, `contains`, JavaScript) и `llm-rubric`, grader —
   `deepseek-flash` с `temperature: 0` и выключенным thinking.
 - Golden допускает 1 случайный фейл из 10: LLM недетерминирован.
-- Прогон обоих наборов стоит около $0.015 (без grader).
+- Стоимость прогона показывает Job Summary (без grader).
 
 Provider [evals/provider.ts](evals/provider.ts) берёт промпт, модель и параметры из
 `release.json` и вызывает LLM через `src/llm.ts`: eval проверяет ровно тот релиз, который
@@ -270,11 +303,12 @@ Job `release` в [ci.yml](.github/workflows/ci.yml) запускается то�
 | Метрика                       | Тип       | Labels и смысл                                   |
 |-------------------------------|-----------|--------------------------------------------------|
 | `agent_chat_requests_total`   | counter   | `status`: ok, error, aborted, bad_request,       |
-|                               |           | unavailable                                      |
+|                               |           | conflict, unavailable                            |
 | `agent_chat_duration_seconds` | histogram | `status`; от запроса до конца стрима             |
 | `agent_chat_ttft_seconds`     | histogram | время до первого фрагмента ответа                |
 | `agent_llm_tokens_total`      | counter   | `type`: prompt, completion (из `usage` DeepSeek) |
-| `agent_llm_cost_usd_total`    | counter   | по `model.pricing`, без скидки за cache hit      |
+|                               |           | и `mode`: question, clarify, answer              |
+| `agent_llm_cost_usd_total`    | counter   | `mode`; по `model.pricing`, без скидки за кэш    |
 | `agent_llm_truncated_total`   | counter   | ответы, обрезанные по `maxTokens`                |
 | `agent_release_info`          | gauge = 1 | все поля manifest                                |
 
@@ -316,11 +350,13 @@ src/config.ts          конфигурация из env (zod)
 src/release.ts         схема release.json, загрузка промпта и проверка sha256
 src/manifest-check.ts  правила check:manifest (чистая функция)
 src/metrics.ts         метрики prom-client
+src/prompt.ts          формат роли, сборка system prompt и сообщений для LLM
 src/llm.ts             интерфейс LlmClient и клиент DeepSeek (openai, streaming, usage)
 src/history.ts         HistoryStore, формат записей, реализация на ioredis
 src/api/server.ts      buildApp(deps): маршруты Fastify
 src/api/main.ts        точка входа API
 src/cli/main.ts        REPL-клиент
+src/cli/input.ts       разбор ввода: уточнение, ответ, команды
 deploy/kind/           конфиг kind-кластера
 deploy/bootstrap/      values Argo CD и root-app (app-of-apps)
 deploy/apps/           Helm chart: Application на каждый компонент

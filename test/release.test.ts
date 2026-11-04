@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { compareSemver, loadRelease, parseManifest, sha256 } from '../src/release.js';
 
-const PROMPT = 'Ты — тренер.\n';
+const PROMPT = 'Ты — тренер на позицию {{role}}. Режим: {{mode}}.\n';
 
 function manifest(overrides: Record<string, unknown> = {}) {
   return {
@@ -59,6 +59,13 @@ describe('loadRelease', () => {
   it('падает, если sha256 промпта не совпадает с manifest', async () => {
     const root = await repo(manifest(), PROMPT + 'правка\n');
     await expect(loadRelease(root)).rejects.toThrow(/sha256 промпта trainer-v1 не совпадает/);
+  });
+
+  it('падает, если в промпте нет плейсхолдера', async () => {
+    const prompt = 'Ты — тренер на позицию {{role}}.\n';
+    const overrides = { prompt: { id: 'trainer-v1', sha256: sha256(prompt) } };
+    const root = await repo(manifest(overrides), prompt);
+    await expect(loadRelease(root)).rejects.toThrow(/нет плейсхолдеров: \{\{mode\}\}/);
   });
 });
 

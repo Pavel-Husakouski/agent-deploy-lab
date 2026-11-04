@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { TokenUsage } from './llm.js';
+import { missingPlaceholders } from './prompt.js';
 
 // Release manifest: всё, что влияет на поведение агента, кроме кода (код версионируется тегом
 // образа). Правила изменения manifest проверяет scripts/check-manifest.ts.
@@ -71,6 +72,10 @@ export async function loadRelease(root = '.'): Promise<Release> {
       `sha256 промпта ${manifest.prompt.id} не совпадает с release.json: ` +
         `ожидается ${manifest.prompt.sha256}, в файле ${actual}`,
     );
+  }
+  const missing = missingPlaceholders(systemPrompt);
+  if (missing.length > 0) {
+    throw new Error(`В промпте ${manifest.prompt.id} нет плейсхолдеров: ${missing.join(', ')}`);
   }
   return { manifest, systemPrompt };
 }

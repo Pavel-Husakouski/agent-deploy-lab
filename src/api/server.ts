@@ -1,8 +1,9 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 import { makeRecord, type HistoryStore } from '../history.js';
-import type { ChatMessage, LlmClient } from '../llm.js';
+import type { LlmClient } from '../llm.js';
 import { createMetrics, type Metrics } from '../metrics.js';
+import { buildMessages, RoleSchema, userText } from '../prompt.js';
 import type { Release } from '../release.js';
 
 export interface AppDeps {
@@ -14,14 +15,24 @@ export interface AppDeps {
   logger?: FastifyServerOptions['logger'];
 }
 
-export const ChatRequestSchema = z.object({
+const ChatBaseShape = {
   sessionId: z
     .string()
     .min(1)
     .max(128)
     .regex(/^[A-Za-z0-9_-]+$/, 'допустимы только латиница, цифры, "_" и "-"'),
-  message: z.string().trim().min(1).max(8000),
-});
+  role: RoleSchema,
+};
+
+// question начинает сессию и обходится без сообщения, clarify и answer относятся к её вопросу.
+export const ChatRequestSchema = z.discriminatedUnion('mode', [
+  z.strictObject({ ...ChatBaseShape, mode: z.literal('question') }),
+  z.strictObject({
+    ...ChatBaseShape,
+    mode: z.enum(['clarify', 'answer']),
+    message: z.string().trim().min(1).max(8000),
+  }),
+]);
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
@@ -32,7 +43,7 @@ function sseEvent(data: unknown, event?: string): string {
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: deps.logger ?? false });
-  const { manifest, systemPrompt } = deps.release;
+  const { manifest, systemPrompt: promptTemplate } = deps.release;
   const metrics = deps.metrics ?? createMetrics(manifest);
 
   app.get('/healthz', async (_req, reply) => {
@@ -58,7 +69,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
       });
     }
-    const { sessionId, message } = parsed.data;
+    const turn = parsed.data;
+    const { sessionId, role, mode } = turn;
 
     // История читается до начала SSE: если Redis недоступен, клиент получит обычный 503.
     let history;
@@ -70,12 +82,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       return reply.code(503).send({ error: 'history_unavailable' });
     }
 
-    const messages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
-      ...history.map((r) => ({ role: r.role, content: r.content })),
-      { role: 'user', content: message },
-    ];
-    const userRecord = makeRecord('user', message);
+    // Режим должен совпадать с состоянием сессии, иначе модель оценит ответ без вопроса.
+    if (mode === 'question' ? history.length > 0 : history.length === 0) {
+      metrics.requests.inc({ status: 'conflict' });
+      return reply
+        .code(409)
+        .send({ error: mode === 'question' ? 'session_not_empty' : 'no_question' });
+    }
+
+    const messages = buildMessages(promptTemplate, role, turn, history);
+    const userRecord = makeRecord('user', userText(turn));
 
     // Дальше отвечаем потоком SSE напрямую в raw-ответ.
     reply.hijack();
@@ -100,7 +116,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     try {
       for await (const event of deps.llm.streamChat(messages, abort.signal)) {
         if (event.type === 'usage') {
-          metrics.recordUsage(event.usage);
+          metrics.recordUsage(event.usage, mode);
           continue;
         }
         if (event.type === 'finish') {
