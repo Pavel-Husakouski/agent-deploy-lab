@@ -24,12 +24,14 @@ const ChatBaseShape = {
   role: RoleSchema,
 };
 
-// question начинает сессию и обходится без сообщения, clarify и answer относятся к её вопросу.
+// question начинает сессию и обходится без сообщения, остальные режимы относятся к её вопросу.
+// clarify идёт до ответа и не раскрывает его, discuss — после разбора. Режим задаёт клиент явно:
+// текст сообщения не должен влиять на то, можно ли раскрывать ответ.
 export const ChatRequestSchema = z.discriminatedUnion('mode', [
   z.strictObject({ ...ChatBaseShape, mode: z.literal('question') }),
   z.strictObject({
     ...ChatBaseShape,
-    mode: z.enum(['clarify', 'answer']),
+    mode: z.enum(['clarify', 'answer', 'discuss']),
     message: z.string().trim().min(1).max(8000),
   }),
 ]);
