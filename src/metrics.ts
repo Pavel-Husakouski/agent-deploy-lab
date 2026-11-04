@@ -1,18 +1,19 @@
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import type { TokenUsage } from './llm.js';
+import type { ChatMode } from './prompt.js';
 import { estimateCostUsd, type ReleaseManifest } from './release.js';
 
-export type ChatStatus = 'ok' | 'error' | 'aborted' | 'bad_request' | 'unavailable';
+export type ChatStatus = 'ok' | 'error' | 'aborted' | 'bad_request' | 'conflict' | 'unavailable';
 
 export interface Metrics {
   registry: Registry;
   requests: Counter<'status'>;
   duration: Histogram<'status'>;
   ttft: Histogram;
-  tokens: Counter<'type'>;
-  costUsd: Counter;
+  tokens: Counter<'type' | 'mode'>;
+  costUsd: Counter<'mode'>;
   truncated: Counter;
-  recordUsage(usage: TokenUsage): void;
+  recordUsage(usage: TokenUsage, mode: ChatMode): void;
 }
 
 // Отдельный Registry на экземпляр приложения: тесты поднимают несколько app в одном процессе.
@@ -69,12 +70,13 @@ export function createMetrics(
   const tokens = new Counter({
     name: 'agent_llm_tokens_total',
     help: 'Токены LLM по данным usage провайдера',
-    labelNames: ['type'] as const,
+    labelNames: ['type', 'mode'] as const,
     registers: [registry],
   });
   const costUsd = new Counter({
     name: 'agent_llm_cost_usd_total',
     help: 'Оценка стоимости запросов к LLM в USD по pricing из release.json',
+    labelNames: ['mode'] as const,
     registers: [registry],
   });
 
@@ -92,10 +94,10 @@ export function createMetrics(
     tokens,
     costUsd,
     truncated,
-    recordUsage(usage) {
-      tokens.inc({ type: 'prompt' }, usage.promptTokens);
-      tokens.inc({ type: 'completion' }, usage.completionTokens);
-      costUsd.inc(estimateCostUsd(usage, manifest.model.pricing));
+    recordUsage(usage, mode) {
+      tokens.inc({ type: 'prompt', mode }, usage.promptTokens);
+      tokens.inc({ type: 'completion', mode }, usage.completionTokens);
+      costUsd.inc({ mode }, estimateCostUsd(usage, manifest.model.pricing));
     },
   };
 }
