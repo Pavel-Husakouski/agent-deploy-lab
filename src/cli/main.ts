@@ -3,27 +3,29 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { parseArgs } from 'node:util';
+import type { ChatTurn } from '../prompt.js';
+import { RoleSchema } from '../prompt.js';
+import { parseInput } from './input.js';
 
 // Консольный клиент: REPL на readline, ответ API печатается по мере прихода SSE-событий.
 const API_URL = process.env['API_URL'] ?? 'http://localhost:13000';
 const STATE_DIR = join(homedir(), '.agent-deploy-lab');
-const SESSION_FILE = join(STATE_DIR, 'session');
+const ROLE_FILE = join(STATE_DIR, 'role');
 
-async function loadSession(): Promise<string> {
+async function loadRole(): Promise<string | undefined> {
   try {
-    const id = (await readFile(SESSION_FILE, 'utf8')).trim();
-    if (id) return id;
+    const role = RoleSchema.safeParse(await readFile(ROLE_FILE, 'utf8'));
+    return role.success ? role.data : undefined;
   } catch {
-    // Файла ещё нет: создадим новую сессию ниже.
+    // Файла ещё нет: роль спросим на старте.
+    return undefined;
   }
-  return newSession();
 }
 
-async function newSession(): Promise<string> {
-  const id = randomUUID();
+async function saveRole(role: string): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
-  await writeFile(SESSION_FILE, `${id}\n`, 'utf8');
-  return id;
+  await writeFile(ROLE_FILE, `${role}\n`, 'utf8');
 }
 
 interface SseEvent {
@@ -52,58 +54,128 @@ async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<SseEve
   }
 }
 
-async function sendMessage(sessionId: string, message: string): Promise<void> {
-  const res = await fetch(`${API_URL}/chat`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sessionId, message }),
-  });
-  if (!res.ok || !res.body) {
-    console.error(`\n[ошибка API ${res.status}] ${await res.text()}`);
-    return;
-  }
-  for await (const { event, data } of readSse(res.body)) {
-    if (event === 'message') {
-      const { delta } = JSON.parse(data) as { delta: string };
-      process.stdout.write(delta);
-    } else if (event === 'done') {
-      process.stdout.write('\n');
-      return;
-    } else if (event === 'error') {
-      const { message: text } = JSON.parse(data) as { message: string };
-      console.error(`\n[ошибка LLM] ${text}`);
-      return;
+// Возвращает true, если ответ дошёл до конца: от этого зависит следующий шаг тренировки.
+async function sendTurn(sessionId: string, role: string, turn: ChatTurn): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, role, ...turn }),
+    });
+    if (!res.ok || !res.body) {
+      console.error(`\n[ошибка API ${res.status}] ${await res.text()}`);
+      return false;
     }
+    for await (const { event, data } of readSse(res.body)) {
+      if (event === 'message') {
+        const { delta } = JSON.parse(data) as { delta: string };
+        process.stdout.write(delta);
+      } else if (event === 'done') {
+        process.stdout.write('\n');
+        return true;
+      } else if (event === 'error') {
+        const { message: text } = JSON.parse(data) as { message: string };
+        console.error(`\n[ошибка LLM] ${text}`);
+        return false;
+      }
+    }
+    console.error('\n[поток оборвался без события done]');
+  } catch (err) {
+    console.error(`[не удалось связаться с API] ${err instanceof Error ? err.message : err}`);
   }
-  console.error('\n[поток оборвался без события done]');
+  return false;
 }
 
 async function main(): Promise<void> {
-  let sessionId = await loadSession();
-  console.log(`API: ${API_URL}, сессия: ${sessionId}`);
-  console.log('Команды: /new — новая сессия, /exit — выход. Напишите «начнём», чтобы начать.');
-
+  const { values } = parseArgs({ options: { role: { type: 'string' } } });
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+  // Итератор создаётся сразу: строки из pipe, пришедшие раньше первого чтения, не потеряются.
+  const lines = rl[Symbol.asyncIterator]();
   // При вводе через pipe readline закрывается по EOF, пока ещё печатается ответ.
   let closed = false;
   rl.once('close', () => {
     closed = true;
   });
-  const prompt = () => {
-    if (!closed) rl.prompt();
+  const prompt = (text = '> ') => {
+    if (closed) return;
+    rl.setPrompt(text);
+    rl.prompt();
   };
+
+  async function askRole(): Promise<string | undefined> {
+    const saved = await loadRole();
+    for (;;) {
+      prompt(saved ? `Роль [${saved}]: ` : 'Роль (например, Node AWS Developer): ');
+      const { value, done } = await lines.next();
+      if (done) return undefined;
+      const parsed = RoleSchema.safeParse(String(value).trim() || saved || '');
+      if (parsed.success) return parsed.data;
+      console.error(`Некорректная роль: ${parsed.error.issues[0]?.message}`);
+    }
+  }
+
+  let initialRole: string | undefined;
+  if (values.role !== undefined) {
+    const parsed = RoleSchema.safeParse(values.role);
+    if (!parsed.success) {
+      console.error(`Некорректная роль: ${parsed.error.issues[0]?.message}`);
+      process.exitCode = 2;
+      rl.close();
+      return;
+    }
+    initialRole = parsed.data;
+  } else {
+    initialRole = await askRole();
+  }
+  if (!initialRole) {
+    rl.close();
+    return;
+  }
+  let role = initialRole;
+  await saveRole(role);
+  console.log(`API: ${API_URL}, роль: ${role}`);
+  console.log('Ответ — просто текст, уточнение — "? текст".');
+  console.log('Команды: /new — другой вопрос, /role <название> — сменить роль, /exit — выход.');
+
+  // Каждый новый вопрос — новая сессия: из прошлой переиспользуется только название роли.
+  let sessionId = '';
+  let hasQuestion = false;
+  const nextQuestion = async () => {
+    sessionId = randomUUID();
+    console.log(`\n─── новый вопрос, роль: ${role} ───`);
+    hasQuestion = await sendTurn(sessionId, role, { mode: 'question' });
+  };
+
+  await nextQuestion();
   prompt();
-  for await (const input of rl) {
-    const line = input.trim();
-    if (line === '/exit') break;
-    if (line === '/new') {
-      sessionId = await newSession();
-      console.log(`Новая сессия: ${sessionId}`);
-    } else if (line) {
-      try {
-        await sendMessage(sessionId, line);
-      } catch (err) {
-        console.error(`[не удалось связаться с API] ${err instanceof Error ? err.message : err}`);
+  for (;;) {
+    const { value, done } = await lines.next();
+    if (done) break;
+    const input = parseInput(String(value));
+    if (input.kind === 'exit') break;
+    if (input.kind === 'hint') {
+      console.log(input.text);
+    } else if (input.kind === 'new') {
+      await nextQuestion();
+    } else if (input.kind === 'role') {
+      const parsed = RoleSchema.safeParse(input.role);
+      if (parsed.success) {
+        role = parsed.data;
+        await saveRole(role);
+        await nextQuestion();
+      } else {
+        console.error(`Некорректная роль: ${parsed.error.issues[0]?.message}`);
+      }
+    } else if (input.kind !== 'empty') {
+      if (!hasQuestion) {
+        // Вопрос не удалось получить: отвечать не на что, поэтому запрашиваем его снова.
+        console.log('Текущего вопроса нет, запрашиваю новый. Сообщение не отправлено.');
+        await nextQuestion();
+      } else if (input.kind === 'clarify') {
+        await sendTurn(sessionId, role, { mode: 'clarify', message: input.text });
+      } else if (await sendTurn(sessionId, role, { mode: 'answer', message: input.text })) {
+        await nextQuestion();
       }
     }
     prompt();
