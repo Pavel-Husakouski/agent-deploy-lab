@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import type { ChatTurn } from '../prompt.js';
 import { RoleSchema } from '../prompt.js';
-import { parseInput } from './input.js';
+import { decideAction, parseInput, REVIEWED_HINT, type Stage } from './input.js';
 
 // Консольный клиент: REPL на readline, ответ API печатается по мере прихода SSE-событий.
 const API_URL = process.env['API_URL'] ?? 'http://localhost:13000';
@@ -135,16 +135,18 @@ async function main(): Promise<void> {
   let role = initialRole;
   await saveRole(role);
   console.log(`API: ${API_URL}, роль: ${role}`);
-  console.log('Ответ — просто текст, уточнение — "? текст".');
+  console.log('Ответ — просто текст, уточнение — "? текст", после разбора Enter — новый вопрос.');
   console.log('Команды: /new — другой вопрос, /role <название> — сменить роль, /exit — выход.');
 
   // Каждый новый вопрос — новая сессия: из прошлой переиспользуется только название роли.
+  // Контекст живёт, пока пользователь уточняет, и сбрасывается при переходе к новому вопросу.
   let sessionId = '';
-  let hasQuestion = false;
+  let stage: Stage = 'no_question';
   const nextQuestion = async () => {
     sessionId = randomUUID();
     console.log(`\n─── новый вопрос, роль: ${role} ───`);
-    hasQuestion = await sendTurn(sessionId, role, { mode: 'question' });
+    const ok = await sendTurn(sessionId, role, { mode: 'question' });
+    stage = ok ? 'awaiting_answer' : 'no_question';
   };
 
   await nextQuestion();
@@ -152,14 +154,17 @@ async function main(): Promise<void> {
   for (;;) {
     const { value, done } = await lines.next();
     if (done) break;
-    const input = parseInput(String(value));
-    if (input.kind === 'exit') break;
-    if (input.kind === 'hint') {
-      console.log(input.text);
-    } else if (input.kind === 'new') {
+    const action = decideAction(stage, parseInput(String(value)));
+    if (action.kind === 'exit') break;
+    if (action.kind === 'hint') {
+      console.log(action.text);
+    } else if (action.kind === 'next_question') {
       await nextQuestion();
-    } else if (input.kind === 'role') {
-      const parsed = RoleSchema.safeParse(input.role);
+    } else if (action.kind === 'retry_question') {
+      console.log('Текущего вопроса нет, запрашиваю новый. Сообщение не отправлено.');
+      await nextQuestion();
+    } else if (action.kind === 'set_role') {
+      const parsed = RoleSchema.safeParse(action.role);
       if (parsed.success) {
         role = parsed.data;
         await saveRole(role);
@@ -167,16 +172,10 @@ async function main(): Promise<void> {
       } else {
         console.error(`Некорректная роль: ${parsed.error.issues[0]?.message}`);
       }
-    } else if (input.kind !== 'empty') {
-      if (!hasQuestion) {
-        // Вопрос не удалось получить: отвечать не на что, поэтому запрашиваем его снова.
-        console.log('Текущего вопроса нет, запрашиваю новый. Сообщение не отправлено.');
-        await nextQuestion();
-      } else if (input.kind === 'clarify') {
-        await sendTurn(sessionId, role, { mode: 'clarify', message: input.text });
-      } else if (await sendTurn(sessionId, role, { mode: 'answer', message: input.text })) {
-        await nextQuestion();
-      }
+    } else if (action.kind === 'send') {
+      const ok = await sendTurn(sessionId, role, { mode: action.mode, message: action.text });
+      if (ok && action.mode === 'answer') stage = 'reviewed';
+      if (ok && stage === 'reviewed') console.log(`\n${REVIEWED_HINT}`);
     }
     prompt();
   }

@@ -135,7 +135,7 @@ describe('POST /chat', () => {
     expect(saved.every((r) => r.schemaVersion === 1)).toBe(true);
   });
 
-  it.each(['clarify', 'answer'])('%s: передаёт в LLM режим, историю и сообщение', async (mode) => {
+  it.each(['clarify', 'answer', 'discuss'])('%s: передаёт в LLM режим, историю и сообщение', async (mode) => {
     const store = await storeWithQuestion();
     const llm = new FakeLlm(['ok']);
     app = buildApp({ llm, store, release: RELEASE });
@@ -181,6 +181,28 @@ describe('POST /chat', () => {
     ]);
   });
 
+  it('обсуждение после разбора сохраняет контекст сессии', async () => {
+    const store = await storeWithQuestion();
+    await store.append('s1', [makeRecord('user', 'ответ'), makeRecord('assistant', 'разбор')]);
+    const llm = new FakeLlm(['ok']);
+    app = buildApp({ llm, store, release: RELEASE });
+
+    await app.inject({
+      method: 'POST',
+      url: '/chat',
+      payload: { sessionId: 's1', role: ROLE, mode: 'discuss', message: 'почему так?' },
+    });
+
+    expect(llm.calls[0]?.map((m) => m.content)).toEqual([
+      `роль ${ROLE}, режим discuss`,
+      'Задай вопрос.',
+      'вопрос тренера',
+      'ответ',
+      'разбор',
+      'почему так?',
+    ]);
+  });
+
   it('роль с шаблонами replacement подставляется как есть', async () => {
     const llm = new FakeLlm(['ok']);
     app = buildApp({ llm, store: new MemoryStore(), release: RELEASE });
@@ -210,7 +232,7 @@ describe('POST /chat', () => {
     expect(llm.calls).toHaveLength(0);
   });
 
-  it.each(['clarify', 'answer'])('%s без вопроса в сессии получает 409', async (mode) => {
+  it.each(['clarify', 'answer', 'discuss'])('%s без вопроса в сессии получает 409', async (mode) => {
     const store = new MemoryStore();
     const llm = new FakeLlm(['x']);
     app = buildApp({ llm, store, release: RELEASE });
@@ -250,6 +272,7 @@ describe('POST /chat', () => {
     [{ sessionId: 's1', role: ROLE, mode: 'other', message: 'x' }],
     [{ sessionId: 's1', role: ROLE, mode: 'question', message: 'x' }],
     [{ sessionId: 's1', role: ROLE, mode: 'answer' }],
+    [{ sessionId: 's1', role: ROLE, mode: 'discuss' }],
     [{ sessionId: 's1', role: ROLE, mode: 'clarify', message: '   ' }],
     [{ sessionId: 'bad id!', role: ROLE, mode: 'question' }],
     [{ sessionId: 's1', role: 'x', mode: 'question' }],

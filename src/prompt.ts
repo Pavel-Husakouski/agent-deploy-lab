@@ -18,7 +18,9 @@ export const QUESTION_REQUEST = 'Задай вопрос.';
 
 const PLACEHOLDERS = ['{{role}}', '{{mode}}'] as const;
 
-export type ChatTurn = { mode: 'question' } | { mode: 'clarify' | 'answer'; message: string };
+export type ChatTurn =
+  | { mode: 'question' }
+  | { mode: 'clarify' | 'answer' | 'discuss'; message: string };
 
 export type ChatMode = ChatTurn['mode'];
 
