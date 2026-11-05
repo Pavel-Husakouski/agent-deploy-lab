@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decideAction, parseInput, REVIEWED_HINT, type Stage } from '../src/cli/input.js';
+import { decideAction, parseInput, type Stage } from '../src/cli/input.js';
 
 describe('parseInput', () => {
   it.each([
@@ -44,13 +44,17 @@ describe('decideAction', () => {
     expect(act('reviewed', '? текст')).toEqual({ kind: 'send', mode: 'discuss', text: 'текст' });
   });
 
-  it('текст без "?" — ответ, а после разбора только подсказка', () => {
+  it('текст без "?" — ответ, а после разбора уточнение', () => {
     expect(act('awaiting_answer', 'ответ')).toEqual({
       kind: 'send',
       mode: 'answer',
       text: 'ответ',
     });
-    expect(act('reviewed', 'ответ')).toEqual({ kind: 'hint', text: REVIEWED_HINT });
+    expect(act('reviewed', 'почему так')).toEqual({
+      kind: 'send',
+      mode: 'discuss',
+      text: 'почему так',
+    });
   });
 
   it.each(['? текст', 'ответ'])('без вопроса %j не отправляется', (line) => {
