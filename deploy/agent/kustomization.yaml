@@ -6,5 +6,5 @@ resources:
 # Образ и тег меняет CI (job release в ci.yml) после каждого merge в main.
 images:
   - name: agent-deploy-lab
-    newTag: 0.6.0-cd84b17
+    newTag: 0.7.0-ae28287
     newName: ghcr.io/pavel-husakouski/agent-deploy-lab
