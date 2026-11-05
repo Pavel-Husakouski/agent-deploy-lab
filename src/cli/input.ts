@@ -1,4 +1,5 @@
-// Разбор строки ввода CLI. Сообщение с "?" в начале — уточнение, без него — ответ на вопрос.
+// Разбор строки ввода CLI. Сообщение с "?" в начале — уточнение, без него — обычный текст:
+// ответ на вопрос или, если разбор уже получен, тоже уточнение.
 export type CliInput =
   | { kind: 'empty' }
   | { kind: 'exit' }
@@ -21,7 +22,7 @@ export type CliAction =
   | { kind: 'send'; mode: 'clarify' | 'answer' | 'discuss'; text: string }
   | { kind: 'hint'; text: string };
 
-export const REVIEWED_HINT = 'Enter — следующий вопрос, "? текст" — спросить по разбору.';
+export const REVIEWED_HINT = 'Enter — следующий вопрос, или задайте свой вопрос по разбору.';
 
 const CLARIFY_HINT = 'Напишите уточнение после "?", например: ? что значит idempotent';
 const ROLE_HINT = 'Укажите роль: /role Node AWS Developer';
@@ -49,7 +50,7 @@ export function parseInput(input: string): CliInput {
 }
 
 // Что делать с вводом на текущем этапе. Enter начинает новый вопрос только после разбора, чтобы
-// случайное нажатие не потеряло вопрос, а текст после разбора не считается вторым ответом.
+// случайное нажатие не потеряло вопрос. Текст после разбора — всегда уточнение, а не второй ответ.
 export function decideAction(stage: Stage, input: CliInput): CliAction {
   switch (input.kind) {
     case 'exit':
@@ -71,7 +72,10 @@ export function decideAction(stage: Stage, input: CliInput): CliAction {
       };
     case 'answer':
       if (stage === 'no_question') return { kind: 'retry_question' };
-      if (stage === 'reviewed') return { kind: 'hint', text: REVIEWED_HINT };
-      return { kind: 'send', mode: 'answer', text: input.text };
+      return {
+        kind: 'send',
+        mode: stage === 'reviewed' ? 'discuss' : 'answer',
+        text: input.text,
+      };
   }
 }

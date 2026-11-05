@@ -42,7 +42,7 @@
 | Компонент  | Описание                                                                         |
 |------------|----------------------------------------------------------------------------------|
 | API        | Fastify: `POST /chat`, `GET /healthz`, `GET /metrics` (Prometheus)               |
-| CLI-клиент | REPL на `readline`, streaming; `? текст` — уточнение, Enter — новый вопрос       |
+| CLI-клиент | REPL на `readline`, streaming; после разбора текст — уточнение, Enter — дальше   |
 | LLM        | DeepSeek через пакет `openai` с `baseURL: https://api.deepseek.com`              |
 | State      | Redis: история диалога по `sessionId`, в записи есть `schemaVersion`             |
 | Промпты    | `prompts/*.md`, выбор версии через feature flag или `release.json`               |
