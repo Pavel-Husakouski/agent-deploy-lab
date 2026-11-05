@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { makeRecord, type HistoryStore } from '../history.js';
 import type { LlmClient } from '../llm.js';
 import { createMetrics, type Metrics } from '../metrics.js';
-import { buildMessages, RoleSchema, userText } from '../prompt.js';
+import { buildMessages, IdSchema, RoleSchema, userText } from '../prompt.js';
 import type { Release } from '../release.js';
 
 export interface AppDeps {
@@ -16,19 +16,16 @@ export interface AppDeps {
 }
 
 const ChatBaseShape = {
-  sessionId: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9_-]+$/, 'допустимы только латиница, цифры, "_" и "-"'),
+  sessionId: IdSchema,
   role: RoleSchema,
 };
 
 // question начинает сессию и обходится без сообщения, остальные режимы относятся к её вопросу.
 // clarify идёт до ответа и не раскрывает его, discuss — после разбора. Режим задаёт клиент явно:
-// текст сообщения не должен влиять на то, можно ли раскрывать ответ.
+// текст сообщения не должен влиять на то, можно ли раскрывать ответ. clientId переживает сессию:
+// по нему API помнит заданные вопросы, без него вопросы могут повторяться.
 export const ChatRequestSchema = z.discriminatedUnion('mode', [
-  z.strictObject({ ...ChatBaseShape, mode: z.literal('question') }),
+  z.strictObject({ ...ChatBaseShape, mode: z.literal('question'), clientId: IdSchema.optional() }),
   z.strictObject({
     ...ChatBaseShape,
     mode: z.enum(['clarify', 'answer', 'discuss']),
@@ -73,11 +70,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
     const turn = parsed.data;
     const { sessionId, role, mode } = turn;
+    const clientId = turn.mode === 'question' ? turn.clientId : undefined;
 
     // История читается до начала SSE: если Redis недоступен, клиент получит обычный 503.
     let history;
+    let asked: string[] = [];
     try {
       history = await deps.store.read(sessionId);
+      if (clientId) asked = await deps.store.readAsked(clientId, role);
     } catch (err) {
       req.log.error({ err }, 'не удалось прочитать историю');
       metrics.requests.inc({ status: 'unavailable' });
@@ -92,7 +92,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         .send({ error: mode === 'question' ? 'session_not_empty' : 'no_question' });
     }
 
-    const messages = buildMessages(promptTemplate, role, turn, history);
+    const messages = buildMessages(promptTemplate, role, turn, history, asked);
     const userRecord = makeRecord('user', userText(turn));
 
     // Дальше отвечаем потоком SSE напрямую в raw-ответ.
@@ -137,6 +137,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
       // Обе реплики сохраняются только после успешного завершения стрима.
       await deps.store.append(sessionId, [userRecord, makeRecord('assistant', answer)]);
+      if (clientId) {
+        // Вопрос уже показан: сбой записи не должен ломать тренировку, худшее — один повтор.
+        await deps.store.addAsked(clientId, role, answer).catch((err: unknown) => {
+          req.log.warn({ err }, 'не удалось сохранить заданный вопрос');
+        });
+      }
       raw.write(sseEvent({}, 'done'));
     } catch (err) {
       if (abort.signal.aborted) {

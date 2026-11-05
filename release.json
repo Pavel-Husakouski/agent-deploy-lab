@@ -1,5 +1,5 @@
 {
-  "version": "0.6.0",
+  "version": "0.7.0",
   "model": {
     "id": "deepseek-flash",
     "temperature": 0.3,
@@ -7,8 +7,8 @@
     "pricing": { "inputPerMTok": 0.3, "outputPerMTok": 1.2 }
   },
   "prompt": {
-    "id": "trainer-v5",
-    "sha256": "388298d2e886b4b698bda12b4fc1eabeb5073643749e9941b31b15ffee6a49b0"
+    "id": "trainer-v6",
+    "sha256": "68dc10003599450fa081065cf557bdc1f5828bd2e3bea21b2e275436623da750"
   },
-  "evalDataset": "golden-v4"
+  "evalDataset": "golden-v5"
 }

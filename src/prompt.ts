@@ -13,13 +13,23 @@ export const RoleSchema = z
   .trim()
   .regex(ROLE_PATTERN, 'от 2 до 80 символов: буквы, цифры, пробел и + # . / ( ) -');
 
+// Идентификатор сессии или клиента: попадает в ключ Redis.
+export const IdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/, 'допустимы только латиница, цифры, "_" и "-"');
+
 // Реплика вместо сообщения клиента в режиме question: у LLM должен быть запрос пользователя.
 export const QUESTION_REQUEST = 'Задай вопрос.';
 
-const PLACEHOLDERS = ['{{role}}', '{{mode}}'] as const;
+const PLACEHOLDERS = ['{{role}}', '{{mode}}', '{{asked}}'] as const;
+
+// Начала вопроса хватает, чтобы узнать тему, а размер запроса к LLM остаётся ограниченным.
+const ASKED_ITEM_CHARS = 200;
 
 export type ChatTurn =
-  | { mode: 'question' }
+  | { mode: 'question'; clientId?: string | undefined }
   | { mode: 'clarify' | 'answer' | 'discuss'; message: string };
 
 export type ChatMode = ChatTurn['mode'];
@@ -29,9 +39,26 @@ export function missingPlaceholders(template: string): string[] {
   return PLACEHOLDERS.filter((p) => !template.includes(p));
 }
 
-export function buildSystemPrompt(template: string, role: string, mode: ChatMode): string {
+// Список заданных вопросов для system prompt: один вопрос на строку.
+export function formatAsked(asked: readonly string[]): string {
+  if (asked.length === 0) return 'нет';
+  return asked
+    .map((question) => `- ${question.replace(/\s+/g, ' ').trim().slice(0, ASKED_ITEM_CHARS)}`)
+    .join('\n');
+}
+
+export function buildSystemPrompt(
+  template: string,
+  role: string,
+  mode: ChatMode,
+  asked: readonly string[] = [],
+): string {
   // Замена функцией: "$&" и другие шаблоны replacement в роли не должны раскрываться.
-  return template.replaceAll('{{role}}', () => role).replaceAll('{{mode}}', () => mode);
+  // Вопросы подставляются последними: это текст модели, плейсхолдеры в нём не раскрываются.
+  return template
+    .replaceAll('{{role}}', () => role)
+    .replaceAll('{{mode}}', () => mode)
+    .replaceAll('{{asked}}', () => formatAsked(asked));
 }
 
 export function userText(turn: ChatTurn): string {
@@ -43,9 +70,10 @@ export function buildMessages(
   role: string,
   turn: ChatTurn,
   history: Pick<HistoryRecord, 'role' | 'content'>[],
+  asked: readonly string[] = [],
 ): ChatMessage[] {
   return [
-    { role: 'system', content: buildSystemPrompt(template, role, turn.mode) },
+    { role: 'system', content: buildSystemPrompt(template, role, turn.mode, asked) },
     ...history.map((r) => ({ role: r.role, content: r.content })),
     { role: 'user', content: userText(turn) },
   ];

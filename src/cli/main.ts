@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import type { ChatTurn } from '../prompt.js';
-import { RoleSchema } from '../prompt.js';
+import { IdSchema, RoleSchema } from '../prompt.js';
 import { decideAction, parseInput, REVIEWED_HINT, type Stage } from './input.js';
 import { bold, boldEnabled } from './style.js';
 
@@ -13,6 +13,7 @@ import { bold, boldEnabled } from './style.js';
 const API_URL = process.env['API_URL'] ?? 'http://localhost:13000';
 const STATE_DIR = join(homedir(), '.agent-deploy-lab');
 const ROLE_FILE = join(STATE_DIR, 'role');
+const CLIENT_ID_FILE = join(STATE_DIR, 'client-id');
 
 async function loadRole(): Promise<string | undefined> {
   try {
@@ -27,6 +28,20 @@ async function loadRole(): Promise<string | undefined> {
 async function saveRole(role: string): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
   await writeFile(ROLE_FILE, `${role}\n`, 'utf8');
+}
+
+// clientId переживает перезапуск CLI: по нему API помнит уже заданные вопросы.
+async function loadClientId(): Promise<string> {
+  try {
+    const saved = IdSchema.safeParse((await readFile(CLIENT_ID_FILE, 'utf8')).trim());
+    if (saved.success) return saved.data;
+  } catch {
+    // Файла ещё нет: создадим новый идентификатор.
+  }
+  const clientId = randomUUID();
+  await mkdir(STATE_DIR, { recursive: true });
+  await writeFile(CLIENT_ID_FILE, `${clientId}\n`, 'utf8');
+  return clientId;
 }
 
 interface SseEvent {
@@ -144,12 +159,13 @@ async function main(): Promise<void> {
 
   // Каждый новый вопрос — новая сессия: из прошлой переиспользуется только название роли.
   // Контекст живёт, пока пользователь уточняет, и сбрасывается при переходе к новому вопросу.
+  const clientId = await loadClientId();
   let sessionId = '';
   let stage: Stage = 'no_question';
   const nextQuestion = async () => {
     sessionId = randomUUID();
     console.log(`\n─── новый вопрос, роль: ${role} ───`);
-    const ok = await sendTurn(sessionId, role, { mode: 'question' });
+    const ok = await sendTurn(sessionId, role, { mode: 'question', clientId });
     stage = ok ? 'awaiting_answer' : 'no_question';
   };
 

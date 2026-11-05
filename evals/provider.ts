@@ -15,6 +15,8 @@ import { estimateCostUsd, loadRelease } from '../src/release.js';
 //   role — название роли, те же правила формата, что в API;
 //   mode — режим хода: question, clarify, answer или discuss;
 //   history — предыдущие реплики диалога [{ role: 'user' | 'assistant', content }], опционально;
+//   asked — уже заданные вопросы, по одному на строку, опционально: promptfoo размножает тест
+//     по массиву строк, поэтому это текст, а не массив;
 //   message — сообщение пользователя (оно же prompt в конфиге promptfoo), в question не нужно.
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -43,6 +45,12 @@ function parseHistory(value: unknown): { role: 'user' | 'assistant'; content: st
     }
     return { role, content };
   });
+}
+
+function parseAsked(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (typeof value !== 'string') throw new Error('vars.asked должен быть строкой');
+  return value.split('\n').filter((line) => line.trim() !== '');
 }
 
 function parseTurn(mode: unknown, message: string): ChatTurn {
@@ -74,6 +82,7 @@ export default class TrainerReleaseProvider {
       RoleSchema.parse(context?.vars['role']),
       parseTurn(context?.vars['mode'], prompt),
       parseHistory(context?.vars['history']),
+      parseAsked(context?.vars['asked']),
     );
 
     let output = '';

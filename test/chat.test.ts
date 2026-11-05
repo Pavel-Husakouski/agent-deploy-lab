@@ -10,18 +10,30 @@ import type {
   LlmEvent,
   TokenUsage,
 } from '../src/llm.js';
-import { QUESTION_REQUEST } from '../src/prompt.js';
+import { buildSystemPrompt, formatAsked, QUESTION_REQUEST } from '../src/prompt.js';
 import type { Release } from '../src/release.js';
 
 class MemoryStore implements HistoryStore {
   data = new Map<string, HistoryRecord[]>();
   healthy = true;
+  asked = new Map<string, string[]>();
+  askedFails = false;
+  addAskedFails = false;
 
   async read(sessionId: string): Promise<HistoryRecord[]> {
     return [...(this.data.get(sessionId) ?? [])];
   }
   async append(sessionId: string, records: HistoryRecord[]): Promise<void> {
     this.data.set(sessionId, [...(this.data.get(sessionId) ?? []), ...records]);
+  }
+  async readAsked(clientId: string, role: string): Promise<string[]> {
+    if (this.askedFails) throw new Error('Redis упал');
+    return [...(this.asked.get(`${clientId}:${role}`) ?? [])];
+  }
+  async addAsked(clientId: string, role: string, question: string): Promise<void> {
+    if (this.addAskedFails) throw new Error('Redis упал');
+    const key = `${clientId}:${role}`;
+    this.asked.set(key, [...(this.asked.get(key) ?? []), question]);
   }
   async ping(): Promise<boolean> {
     return this.healthy;
@@ -69,6 +81,7 @@ function parseSse(body: string): ParsedEvent[] {
 }
 
 const TEMPLATE = 'роль {{role}}, режим {{mode}}';
+const ASKED_TEMPLATE = 'режим {{mode}}, заданные:\n{{asked}}';
 const ROLE = 'Node AWS Developer';
 const RELEASE: Release = {
   systemPrompt: TEMPLATE,
@@ -101,6 +114,102 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   await app?.close();
   app = undefined;
+});
+
+describe('POST /chat, память о заданных вопросах', () => {
+  const askedRelease: Release = { ...RELEASE, systemPrompt: ASKED_TEMPLATE };
+  const question = (sessionId: string, extra: object = { clientId: 'c1' }) => ({
+    method: 'POST' as const,
+    url: '/chat',
+    payload: { sessionId, role: ROLE, mode: 'question', ...extra },
+  });
+
+  it('следующий вопрос клиента получает прошлые в system prompt', async () => {
+    const store = new MemoryStore();
+    const llm = new FakeLlm(['Про\nSQS?']);
+    app = buildApp({ llm, store, release: askedRelease });
+
+    await app.inject(question('s1'));
+    await app.inject(question('s2'));
+
+    expect(llm.calls[0]?.[0]?.content).toBe('режим question, заданные:\nнет');
+    expect(llm.calls[1]?.[0]?.content).toBe('режим question, заданные:\n- Про SQS?');
+  });
+
+  it('без clientId ничего не читает и не сохраняет', async () => {
+    const store = new MemoryStore();
+    store.askedFails = true;
+    store.addAskedFails = true;
+    const llm = new FakeLlm(['Вопрос']);
+    app = buildApp({ llm, store, release: askedRelease });
+
+    const res = await app.inject(question('s1', {}));
+
+    expect(parseSse(res.body).at(-1)?.event).toBe('done');
+    expect(store.asked.size).toBe(0);
+  });
+
+  it('вопросы разных ролей не смешиваются', async () => {
+    const store = new MemoryStore();
+    const llm = new FakeLlm(['Вопрос']);
+    app = buildApp({ llm, store, release: askedRelease });
+
+    await app.inject(question('s1'));
+    await app.inject(question('s2', { clientId: 'c1', role: 'Data Engineer' }));
+
+    expect(llm.calls[1]?.[0]?.content).toBe('режим question, заданные:\nнет');
+  });
+
+  it('оборванный ответ не считается заданным вопросом', async () => {
+    const store = new MemoryStore();
+    app = buildApp({ llm: new FakeLlm(['а', 'б'], 1), store, release: askedRelease });
+
+    await app.inject(question('s1'));
+
+    expect(store.asked.size).toBe(0);
+  });
+
+  it('сбой записи вопроса не ломает ответ', async () => {
+    const store = new MemoryStore();
+    store.addAskedFails = true;
+    app = buildApp({ llm: new FakeLlm(['Вопрос']), store, release: askedRelease });
+
+    const res = await app.inject(question('s1'));
+
+    expect(parseSse(res.body).at(-1)?.event).toBe('done');
+    expect(await store.read('s1')).toHaveLength(2);
+  });
+
+  it('сбой чтения вопросов даёт 503 до начала стрима', async () => {
+    const store = new MemoryStore();
+    store.askedFails = true;
+    app = buildApp({ llm: new FakeLlm(['Вопрос']), store, release: askedRelease });
+
+    expect((await app.inject(question('s1'))).statusCode).toBe(503);
+  });
+
+  it.each(['clarify', 'answer', 'discuss'])('%s: clientId отклоняется', async (mode) => {
+    const store = await storeWithQuestion();
+    app = buildApp({ llm: new FakeLlm(['ok']), store, release: askedRelease });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/chat',
+      payload: { ...ANSWER, mode, clientId: 'c1' },
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('плейсхолдеры и шаблоны replacement в вопросе не раскрываются', () => {
+    expect(buildSystemPrompt(ASKED_TEMPLATE, ROLE, 'question', ['{{mode}} $&'])).toBe(
+      'режим question, заданные:\n- {{mode}} $&',
+    );
+  });
+
+  it('длинный вопрос обрезается', () => {
+    expect(formatAsked(['я'.repeat(500)])).toBe(`- ${'я'.repeat(200)}`);
+  });
 });
 
 describe('POST /chat', () => {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { compareSemver, loadRelease, parseManifest, sha256 } from '../src/release.js';
 
-const PROMPT = 'Ты — тренер на позицию {{role}}. Режим: {{mode}}.\n';
+const PROMPT = 'Ты — тренер на позицию {{role}}. Режим: {{mode}}. Заданные: {{asked}}.\n';
 
 function manifest(overrides: Record<string, unknown> = {}) {
   return {
