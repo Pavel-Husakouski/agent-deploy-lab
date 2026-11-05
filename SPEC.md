@@ -55,8 +55,8 @@
 {
   "version": "1.2.0",
   "model": { "id": "deepseek-flash", "temperature": 0.3, "maxTokens": 1024 },
-  "prompt": { "id": "trainer-v5", "sha256": "…" },
-  "evalDataset": "golden-v4"
+  "prompt": { "id": "trainer-v6", "sha256": "…" },
+  "evalDataset": "golden-v5"
 }
 ```
 
@@ -192,7 +192,8 @@ bootstrap (make up):
 | Доступ        | kind `extraPortMappings`: API 13000, Argo CD 18080, Prometheus 19090    |
 | Роль          | свободный текст от клиента, формат и eval injection, не хранится в API  |
 | Режим хода    | `mode` в запросе, подставляет API, текст пользователя на него не влияет |
-| Контекст      | сессия = вопрос и обсуждение; повтор вопросов между сессиями допустим   |
+| Контекст      | сессия = вопрос и обсуждение, разбор между сессиями не передаётся       |
+| Повторы       | последние 20 вопросов по `clientId` и роли в Redis, TTL 30 дней         |
 | Уточнение     | до ответа `clarify` без эталона, после разбора `discuss` без оценки     |
 | Краткость     | уточнения: правило в промпте и eval, `maxTokens` обрывал бы ответ       |
 | Ключ в k8s    | `make secret` из `DEEPSEEK_API_KEY` окружения, `.env` не читается       |
