@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ASKED_LIMIT,
+  ASKED_TTL_SECONDS,
   HISTORY_TTL_SECONDS,
   RedisHistoryStore,
   makeRecord,
@@ -23,6 +25,12 @@ function fakeRedis() {
       const tx = {
         rpush(key: string, ...values: string[]) {
           ops.push(() => lists.set(key, [...(lists.get(key) ?? []), ...values]));
+          return tx;
+        },
+        ltrim(key: string, start: number, stop: number) {
+          ops.push(() =>
+            lists.set(key, (lists.get(key) ?? []).slice(start, stop === -1 ? undefined : stop + 1)),
+          );
           return tx;
         },
         expire(key: string, seconds: number) {
@@ -87,6 +95,20 @@ describe('RedisHistoryStore', () => {
     lists.set('session:s1', ['{битая', serializeRecord(good)]);
 
     expect(await new RedisHistoryStore(redis).read('s1')).toEqual([good]);
+  });
+
+  it('хранит только последние вопросы клиента по роли, с TTL', async () => {
+    const { redis, ttl } = fakeRedis();
+    const store = new RedisHistoryStore(redis);
+
+    for (let i = 0; i < ASKED_LIMIT + 2; i++) await store.addAsked('c1', 'Data Engineer', `q${i}`);
+
+    const asked = await store.readAsked('c1', 'data engineer');
+    expect(asked).toHaveLength(ASKED_LIMIT);
+    expect(asked.at(-1)).toBe(`q${ASKED_LIMIT + 1}`);
+    expect(asked[0]).toBe('q2');
+    expect(ttl.get('asked:c1:data engineer')).toBe(ASKED_TTL_SECONDS);
+    expect(await store.readAsked('c2', 'Data Engineer')).toEqual([]);
   });
 
   it('ping возвращает true на PONG', async () => {

@@ -3,6 +3,9 @@ import { z } from 'zod';
 
 export const HISTORY_SCHEMA_VERSION = 1;
 export const HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60;
+// Сколько последних вопросов и как долго клиент не должен получать повторно.
+export const ASKED_LIMIT = 20;
+export const ASKED_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 // Формат записи истории в Redis. schemaVersion нужен для будущих миграций и отката (этап 7).
 export const HistoryRecordSchema = z.object({
@@ -17,11 +20,18 @@ export type HistoryRecord = z.infer<typeof HistoryRecordSchema>;
 export interface HistoryStore {
   read(sessionId: string): Promise<HistoryRecord[]>;
   append(sessionId: string, records: HistoryRecord[]): Promise<void>;
+  readAsked(clientId: string, role: string): Promise<string[]>;
+  addAsked(clientId: string, role: string, question: string): Promise<void>;
   ping(): Promise<boolean>;
 }
 
 export function sessionKey(sessionId: string): string {
   return `session:${sessionId}`;
+}
+
+// ":" нет ни в clientId, ни в роли, поэтому ключ однозначен.
+export function askedKey(clientId: string, role: string): string {
+  return `asked:${clientId}:${role.toLowerCase()}`;
 }
 
 export function makeRecord(
@@ -68,6 +78,20 @@ export class RedisHistoryStore implements HistoryStore {
       .multi()
       .rpush(key, ...records.map(serializeRecord))
       .expire(key, HISTORY_TTL_SECONDS)
+      .exec();
+  }
+
+  async readAsked(clientId: string, role: string): Promise<string[]> {
+    return this.redis.lrange(askedKey(clientId, role), -ASKED_LIMIT, -1);
+  }
+
+  async addAsked(clientId: string, role: string, question: string): Promise<void> {
+    const key = askedKey(clientId, role);
+    await this.redis
+      .multi()
+      .rpush(key, question)
+      .ltrim(key, -ASKED_LIMIT, -1)
+      .expire(key, ASKED_TTL_SECONDS)
       .exec();
   }
 
