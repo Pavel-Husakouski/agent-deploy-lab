@@ -146,9 +146,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         // историю пишется markdown, чтобы discuss видел разбор как текст.
         const review = await requestReview(
           () => generate(() => {}, true),
-          (text) => {
+          (text, reason) => {
             metrics.invalidOutput.inc();
-            req.log.warn({ length: text.length }, 'разбор не прошёл схему');
+            // Только причина и длина: текст ответа может содержать данные кандидата.
+            req.log.warn(
+              { reason: reason.slice(0, 300), length: text.length },
+              'разбор не прошёл схему',
+            );
           },
         );
         if (review.kind === 'review') metrics.reviewScore.observe(review.score);

@@ -106,11 +106,23 @@ export default class TrainerReleaseProvider {
     };
 
     let output: string;
+    const invalid: string[] = [];
     if (context?.vars['mode'] === 'answer') {
       try {
-        output = JSON.stringify(await requestReview(() => generate(true)));
+        output = JSON.stringify(
+          await requestReview(
+            () => generate(true),
+            (text, reason) => {
+              // Повтор поднимает стоимость теста: причина нужна, чтобы понять, почему он был.
+              invalid.push(reason);
+              const head = JSON.stringify(text.slice(0, 300));
+              console.error(`[review] ответ отклонён: ${reason}; начало: ${head}`);
+            },
+          ),
+        );
       } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
+        const message = err instanceof Error ? err.message : String(err);
+        return { error: `${message}: ${invalid.join(' | ')}` };
       }
     } else {
       output = await generate();
@@ -127,7 +139,12 @@ export default class TrainerReleaseProvider {
         },
         cost: estimateCostUsd(usage, manifest.model.pricing),
       }),
-      metadata: { release: manifest.version, prompt: manifest.prompt.id, model: manifest.model.id },
+      metadata: {
+        release: manifest.version,
+        prompt: manifest.prompt.id,
+        model: manifest.model.id,
+        ...(invalid.length > 0 && { invalidReviews: invalid }),
+      },
     };
   }
 }

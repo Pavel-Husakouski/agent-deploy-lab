@@ -24,28 +24,36 @@ export const REVIEW_ATTEMPTS = 2;
 
 export class InvalidReviewError extends Error {}
 
-export function parseReview(text: string): Review | null {
-  if (text.trim() === '') return null;
+// Разбор или причина, по которой ответ не прошёл: она идёт в лог API и eval.
+export function checkReview(text: string): { review: Review } | { error: string } {
+  if (text.trim() === '') return { error: 'пустой ответ' };
   let json: unknown;
   try {
     json = JSON.parse(text);
-  } catch {
-    return null;
+  } catch (err) {
+    return { error: `не JSON: ${err instanceof Error ? err.message : String(err)}` };
   }
   const parsed = ReviewSchema.safeParse(json);
-  return parsed.success ? parsed.data : null;
+  if (parsed.success) return { review: parsed.data };
+  const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+  return { error: `схема: ${issues}` };
+}
+
+export function parseReview(text: string): Review | null {
+  const result = checkReview(text);
+  return 'review' in result ? result.review : null;
 }
 
 // generate — один вызов LLM в JSON mode, onInvalid — учёт ответа, не прошедшего схему.
 export async function requestReview(
   generate: () => Promise<string>,
-  onInvalid: (text: string) => void = () => {},
+  onInvalid: (text: string, reason: string) => void = () => {},
 ): Promise<Review> {
   for (let attempt = 0; attempt < REVIEW_ATTEMPTS; attempt++) {
     const text = await generate();
-    const review = parseReview(text);
-    if (review) return review;
-    onInvalid(text);
+    const result = checkReview(text);
+    if ('review' in result) return result.review;
+    onInvalid(text, result.error);
   }
   throw new InvalidReviewError(`разбор не прошёл схему за ${REVIEW_ATTEMPTS} попытки`);
 }

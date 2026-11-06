@@ -8,7 +8,7 @@
   },
   "prompt": {
     "id": "trainer-v7",
-    "sha256": "99d41f70b0e48b74e82f79a0d3be0408a2dc9b0725c56d32a7f34c7677807758"
+    "sha256": "e9481f91172f049487caf32c5cb37b0f3c87b62f7e00afec21301577c9742517"
   },
   "evalDataset": "golden-v7"
 }
