@@ -7,6 +7,7 @@ import {
 } from '../src/llm.js';
 import { buildMessages, RoleSchema, type ChatTurn } from '../src/prompt.js';
 import { estimateCostUsd, loadRelease } from '../src/release.js';
+import { requestReview } from '../src/review.js';
 
 // Custom provider для promptfoo: проверяется ровно тот релиз, который поедет в прод.
 // Промпт, модель, параметры и pricing берутся из release.json, вызов LLM — через src/llm.ts.
@@ -18,6 +19,9 @@ import { estimateCostUsd, loadRelease } from '../src/release.js';
 //   asked — уже заданные вопросы, по одному на строку, опционально: promptfoo размножает тест
 //     по массиву строк, поэтому это текст, а не массив;
 //   message — сообщение пользователя (оно же prompt в конфиге promptfoo), в question не нужно.
+//
+// В режиме answer output — JSON разбора после проверки схемы (с тем же повтором, что в API),
+// токены и стоимость суммируются по всем попыткам.
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -85,13 +89,31 @@ export default class TrainerReleaseProvider {
       parseAsked(context?.vars['asked']),
     );
 
-    let output = '';
     let usage: TokenUsage | undefined;
     let finishReason: FinishReason | undefined;
-    for await (const event of llm.streamChat(messages)) {
-      if (event.type === 'delta') output += event.text;
-      else if (event.type === 'usage') usage = event.usage;
-      else finishReason = event.reason;
+    const generate = async (json = false): Promise<string> => {
+      let text = '';
+      for await (const event of llm.streamChat(messages, undefined, { json })) {
+        if (event.type === 'delta') text += event.text;
+        else if (event.type === 'usage') {
+          usage = {
+            promptTokens: (usage?.promptTokens ?? 0) + event.usage.promptTokens,
+            completionTokens: (usage?.completionTokens ?? 0) + event.usage.completionTokens,
+          };
+        } else finishReason = event.reason;
+      }
+      return text;
+    };
+
+    let output: string;
+    if (context?.vars['mode'] === 'answer') {
+      try {
+        output = JSON.stringify(await requestReview(() => generate(true)));
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    } else {
+      output = await generate();
     }
 
     return {

@@ -8,10 +8,12 @@ import type {
   FinishReason,
   LlmClient,
   LlmEvent,
+  StreamOptions,
   TokenUsage,
 } from '../src/llm.js';
 import { buildSystemPrompt, formatAsked, QUESTION_REQUEST } from '../src/prompt.js';
 import type { Release } from '../src/release.js';
+import { renderReview, type Review } from '../src/review.js';
 
 class MemoryStore implements HistoryStore {
   data = new Map<string, HistoryRecord[]>();
@@ -42,6 +44,7 @@ class MemoryStore implements HistoryStore {
 
 class FakeLlm implements LlmClient {
   calls: ChatMessage[][] = [];
+  options: (StreamOptions | undefined)[] = [];
   constructor(
     private readonly chunks: string[],
     private readonly failAfter?: number,
@@ -49,8 +52,13 @@ class FakeLlm implements LlmClient {
     private readonly finishReason?: FinishReason,
   ) {}
 
-  async *streamChat(messages: ChatMessage[]): AsyncIterable<LlmEvent> {
+  async *streamChat(
+    messages: ChatMessage[],
+    _signal?: AbortSignal,
+    options?: StreamOptions,
+  ): AsyncIterable<LlmEvent> {
     this.calls.push(messages);
+    this.options.push(options);
     for (const [i, chunk] of this.chunks.entries()) {
       if (this.failAfter !== undefined && i >= this.failAfter) throw new Error('LLM упала');
       yield { type: 'delta', text: chunk };
@@ -108,6 +116,20 @@ async function storeWithQuestion(sessionId = 's1'): Promise<MemoryStore> {
 }
 
 const ANSWER = { sessionId: 's1', role: ROLE, mode: 'answer', message: 'q' };
+const CLARIFY = { ...ANSWER, mode: 'clarify' };
+const REVIEW: Review = {
+  kind: 'review',
+  score: 7,
+  reason: 'идея верная',
+  good: 'дедупликация',
+  missing: ['TTL'],
+  reference: ['условная запись'],
+};
+// JSON разбора кусками, как его стримит провайдер.
+const REVIEW_CHUNKS = (() => {
+  const json = JSON.stringify(REVIEW);
+  return [json.slice(0, 20), json.slice(20)];
+})();
 
 let app: FastifyInstance | undefined;
 
@@ -209,6 +231,62 @@ describe('POST /chat, память о заданных вопросах', () => 
 
   it('длинный вопрос обрезается', () => {
     expect(formatAsked(['я'.repeat(500)])).toBe(`- ${'я'.repeat(200)}`);
+  });
+});
+
+describe('POST /chat, разбор в режиме answer', () => {
+  const answer = async (llm: FakeLlm, store?: MemoryStore) => {
+    const s = store ?? (await storeWithQuestion());
+    app = buildApp({ llm, store: s, release: RELEASE });
+    const res = await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+    return { events: parseSse(res.body), store: s };
+  };
+
+  it('просит JSON mode, отдаёт разбор одним событием и пишет markdown в историю', async () => {
+    const llm = new FakeLlm(REVIEW_CHUNKS);
+
+    const { events, store } = await answer(llm);
+
+    expect(llm.options).toEqual([{ json: true }]);
+    expect(events).toEqual([
+      { event: 'review', data: REVIEW },
+      { event: 'done', data: {} },
+    ]);
+    expect((await store.read('s1')).at(-1)?.content).toBe(renderReview(REVIEW));
+  });
+
+  it('остальные режимы стримят текст без JSON mode', async () => {
+    const llm = new FakeLlm(['ok']);
+    app = buildApp({ llm, store: await storeWithQuestion(), release: RELEASE });
+
+    await app.inject({ method: 'POST', url: '/chat', payload: CLARIFY });
+
+    expect(llm.options).toEqual([{ json: false }]);
+  });
+
+  it('ответ не по схеме: повтор, затем event: error без записи в историю', async () => {
+    const llm = new FakeLlm(['  ']);
+
+    const { events, store } = await answer(llm);
+
+    expect(llm.calls).toHaveLength(2);
+    expect(events.map((e) => e.event)).toEqual(['error']);
+    expect(await store.read('s1')).toHaveLength(2);
+    const body = (await app!.inject({ method: 'GET', url: '/metrics' })).body;
+    expect(body).toContain('agent_llm_invalid_output_total{release="1.2.0"');
+    expect(body).toMatch(/agent_llm_invalid_output_total\{[^}]*\} 2/);
+    expect(body).toMatch(/agent_chat_requests_total\{[^}]*status="error"[^}]*\} 1/);
+  });
+
+  it('redirect: без оценки, в историю идёт текст', async () => {
+    const redirect = { kind: 'redirect', text: 'вернёмся к вопросу' };
+
+    const { events, store } = await answer(new FakeLlm([JSON.stringify(redirect)]));
+
+    expect(events[0]).toEqual({ event: 'review', data: redirect });
+    expect((await store.read('s1')).at(-1)?.content).toBe('вернёмся к вопросу');
+    const body = (await app!.inject({ method: 'GET', url: '/metrics' })).body;
+    expect(body).toMatch(/agent_review_score_count\{[^}]*\} 0/);
   });
 });
 
@@ -409,7 +487,8 @@ describe('GET /metrics', () => {
   }
 
   it('считает запросы, токены и стоимость, labels содержат версию релиза', async () => {
-    const llm = new FakeLlm(['ок'], undefined, { promptTokens: 1000, completionTokens: 500 });
+    const usage = { promptTokens: 1000, completionTokens: 500 };
+    const llm = new FakeLlm(REVIEW_CHUNKS, undefined, usage);
     app = buildApp({ llm, store: await storeWithQuestion(), release: RELEASE });
 
     await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
@@ -429,6 +508,9 @@ describe('GET /metrics', () => {
     expect(metric(body, 'agent_chat_duration_seconds_count', 'status="ok"')).toBe(1);
     expect(metric(body, 'agent_chat_ttft_seconds_count')).toBe(1);
     expect(metric(body, 'agent_release_info', 'prompt_sha256="' + 'a'.repeat(64))).toBe(1);
+    expect(metric(body, 'agent_review_score_count')).toBe(1);
+    expect(metric(body, 'agent_review_score_bucket', 'le="7"')).toBe(1);
+    expect(metric(body, 'agent_review_score_bucket', 'le="6"')).toBe(0);
     expect(body).toContain(common);
   });
 
@@ -437,7 +519,7 @@ describe('GET /metrics', () => {
     const cut = new FakeLlm(['длинный'], undefined, usage, 'length');
     app = buildApp({ llm: cut, store: await storeWithQuestion(), release: RELEASE });
 
-    await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+    await app.inject({ method: 'POST', url: '/chat', payload: CLARIFY });
     const body = (await app.inject({ method: 'GET', url: '/metrics' })).body;
 
     expect(metric(body, 'agent_llm_truncated_total')).toBe(1);
@@ -449,7 +531,7 @@ describe('GET /metrics', () => {
     const llm = new FakeLlm(['ок'], undefined, undefined, 'stop');
     app = buildApp({ llm, store: await storeWithQuestion(), release: RELEASE });
 
-    await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+    await app.inject({ method: 'POST', url: '/chat', payload: CLARIFY });
     const body = (await app.inject({ method: 'GET', url: '/metrics' })).body;
 
     expect(metric(body, 'agent_llm_truncated_total')).toBe(0);
