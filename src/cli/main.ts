@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import type { ChatTurn } from '../prompt.js';
 import { IdSchema, RoleSchema } from '../prompt.js';
 import { decideAction, parseInput, REVIEWED_HINT, type Stage } from './input.js';
-import { bold, boldEnabled } from './style.js';
+import { boldEnabled, createBoldRenderer } from './style.js';
 
 // Консольный клиент: REPL на readline, ответ API печатается по мере прихода SSE-событий.
 const API_URL = process.env['API_URL'] ?? 'http://localhost:13000';
@@ -72,8 +72,11 @@ async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<SseEve
 
 // Возвращает true, если ответ дошёл до конца: от этого зависит следующий шаг тренировки.
 async function sendTurn(sessionId: string, role: string, turn: ChatTurn): Promise<boolean> {
-  const boldText =
-    turn.mode === 'question' && boldEnabled(process.stdout.isTTY, process.env['NO_COLOR']);
+  // Вопрос печатается жирным целиком, в остальных ответах — только **выделенное**.
+  const render = createBoldRenderer(
+    boldEnabled(process.stdout.isTTY, process.env['NO_COLOR']),
+    turn.mode === 'question',
+  );
   let res: Response;
   try {
     res = await fetch(`${API_URL}/chat`, {
@@ -88,9 +91,9 @@ async function sendTurn(sessionId: string, role: string, turn: ChatTurn): Promis
     for await (const { event, data } of readSse(res.body)) {
       if (event === 'message') {
         const { delta } = JSON.parse(data) as { delta: string };
-        process.stdout.write(boldText ? bold(delta) : delta);
+        process.stdout.write(render.write(delta));
       } else if (event === 'done') {
-        process.stdout.write('\n');
+        process.stdout.write(`${render.end()}\n`);
         return true;
       } else if (event === 'error') {
         const { message: text } = JSON.parse(data) as { message: string };
