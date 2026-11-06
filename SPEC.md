@@ -56,7 +56,7 @@
   "version": "1.2.0",
   "model": { "id": "deepseek-flash", "temperature": 0.3, "maxTokens": 1024 },
   "prompt": { "id": "trainer-v6", "sha256": "…" },
-  "evalDataset": "golden-v5"
+  "evalDataset": "golden-v6"
 }
 ```
 
