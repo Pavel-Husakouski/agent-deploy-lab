@@ -5,6 +5,7 @@ import type { LlmClient } from '../llm.js';
 import { createMetrics, type Metrics } from '../metrics.js';
 import { buildMessages, IdSchema, RoleSchema, userText } from '../prompt.js';
 import type { Release } from '../release.js';
+import { renderReview, requestReview } from '../review.js';
 
 export interface AppDeps {
   llm: LlmClient;
@@ -115,8 +116,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     let firstDelta = true;
     let status: 'ok' | 'error' | 'aborted' = 'ok';
     let answer = '';
-    try {
-      for await (const event of deps.llm.streamChat(messages, abort.signal)) {
+    // Один вызов LLM: onDelta получает фрагменты по мере прихода, результат — весь текст.
+    const generate = async (onDelta: (text: string) => void, json = false): Promise<string> => {
+      let text = '';
+      for await (const event of deps.llm.streamChat(messages, abort.signal, { json })) {
         if (event.type === 'usage') {
           metrics.recordUsage(event.usage, mode);
           continue;
@@ -132,8 +135,31 @@ export function buildApp(deps: AppDeps): FastifyInstance {
           endTtft();
           firstDelta = false;
         }
-        answer += event.text;
-        raw.write(sseEvent({ delta: event.text }));
+        text += event.text;
+        onDelta(event.text);
+      }
+      return text;
+    };
+    try {
+      if (mode === 'answer') {
+        // Разбор приходит JSON: клиенту он уходит одним событием после проверки схемы, а в
+        // историю пишется markdown, чтобы discuss видел разбор как текст.
+        const review = await requestReview(
+          () => generate(() => {}, true),
+          (text, reason) => {
+            metrics.invalidOutput.inc();
+            // Только причина и длина: текст ответа может содержать данные кандидата.
+            req.log.warn(
+              { reason: reason.slice(0, 300), length: text.length },
+              'разбор не прошёл схему',
+            );
+          },
+        );
+        if (review.kind === 'review') metrics.reviewScore.observe(review.score);
+        answer = renderReview(review);
+        raw.write(sseEvent(review, 'review'));
+      } else {
+        answer = await generate((text) => raw.write(sseEvent({ delta: text })));
       }
       // Обе реплики сохраняются только после успешного завершения стрима.
       await deps.store.append(sessionId, [userRecord, makeRecord('assistant', answer)]);

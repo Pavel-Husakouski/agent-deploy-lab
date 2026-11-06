@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import type { ChatTurn } from '../prompt.js';
 import { IdSchema, RoleSchema } from '../prompt.js';
+import { renderReview, ReviewSchema } from '../review.js';
 import { decideAction, parseInput, REVIEWED_HINT, type Stage } from './input.js';
 import { boldEnabled, createBoldRenderer } from './style.js';
 
@@ -77,6 +78,14 @@ async function sendTurn(sessionId: string, role: string, turn: ChatTurn): Promis
     boldEnabled(process.stdout.isTTY, process.env['NO_COLOR']),
     turn.mode === 'question',
   );
+  // Разбор приходит целиком после проверки на сервере: пока его нет, показываем, что ждём.
+  // Строка ожидания стирается один раз, до первого вывода.
+  let waiting = turn.mode === 'answer' && Boolean(process.stdout.isTTY);
+  if (waiting) process.stdout.write('разбираю ответ…');
+  const stopWaiting = () => {
+    if (waiting) process.stdout.write('\r\x1b[2K');
+    waiting = false;
+  };
   let res: Response;
   try {
     res = await fetch(`${API_URL}/chat`, {
@@ -85,17 +94,29 @@ async function sendTurn(sessionId: string, role: string, turn: ChatTurn): Promis
       body: JSON.stringify({ sessionId, role, ...turn }),
     });
     if (!res.ok || !res.body) {
+      stopWaiting();
       console.error(`\n[ошибка API ${res.status}] ${await res.text()}`);
       return false;
     }
     for await (const { event, data } of readSse(res.body)) {
       if (event === 'message') {
         const { delta } = JSON.parse(data) as { delta: string };
+        stopWaiting();
         process.stdout.write(render.write(delta));
+      } else if (event === 'review') {
+        stopWaiting();
+        const review = ReviewSchema.safeParse(JSON.parse(data));
+        if (!review.success) {
+          console.error('\n[разбор в неизвестном формате]');
+          return false;
+        }
+        process.stdout.write(render.write(renderReview(review.data)));
       } else if (event === 'done') {
+        stopWaiting();
         process.stdout.write(`${render.end()}\n`);
         return true;
       } else if (event === 'error') {
+        stopWaiting();
         const { message: text } = JSON.parse(data) as { message: string };
         console.error(`\n[ошибка LLM] ${text}`);
         return false;
@@ -103,6 +124,7 @@ async function sendTurn(sessionId: string, role: string, turn: ChatTurn): Promis
     }
     console.error('\n[поток оборвался без события done]');
   } catch (err) {
+    stopWaiting();
     console.error(`[не удалось связаться с API] ${err instanceof Error ? err.message : err}`);
   }
   return false;

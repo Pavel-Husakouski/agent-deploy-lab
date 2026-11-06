@@ -1,0 +1,411 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+# Golden set тренера: вопрос по роли, уточнение, формат разбора, оценка ответов, язык.
+# Gate: pass rate >= 90% (порог задаёт scripts/eval.ts), cost <= $0.002 на ответ.
+description: golden-v7 / golden
+
+prompts:
+  - '{{message}}'
+
+providers:
+  - id: file://../provider.ts
+    label: release
+
+defaultTest:
+  options:
+    # Grader тоже DeepSeek; thinking выключен, temperature 0 для стабильности оценок.
+    provider:
+      id: deepseek:deepseek-flash
+      config:
+        temperature: 0
+        reasoning_effort: none
+  assert:
+    - type: cost
+      threshold: 0.002
+      metric: cost
+    # Ответ не обрезан по maxTokens: иначе разбор теряет последние разделы.
+    - type: finish-reason
+      value: stop
+      metric: truncation
+
+# Вопрос тренера: каждая сессия начинается с него и больше ничего из прошлого не содержит.
+# Эталон выдан, если есть заголовок раздела. Подстрока без двоеточия ловила бы и отказ
+# вида «эталонный ответ не выдаю».
+x-no-reference-value: &no-reference-value '[Ээ]талонный ответ\*{0,2}\s*:'
+
+x-history-sqs: &history-sqs
+  - role: user
+    content: Задай вопрос.
+  - role: assistant
+    content: |
+      **Вопрос:** как обеспечить идемпотентность AWS Lambda на Node.js при повторной доставке
+      сообщений из SQS?
+
+x-history-sqs-clarified: &history-sqs-clarified
+  - role: user
+    content: Задай вопрос.
+  - role: assistant
+    content: |
+      **Вопрос:** как обеспечить идемпотентность AWS Lambda на Node.js при повторной доставке
+      сообщений из SQS?
+  - role: user
+    content: что значит повторная доставка?
+  - role: assistant
+    content: >-
+      SQS гарантирует доставку как минимум один раз, поэтому одно сообщение может прийти в
+      Lambda несколько раз.
+
+# Сессия после разбора: режим discuss продолжает её с тем же контекстом.
+x-history-sqs-reviewed: &history-sqs-reviewed
+  - role: user
+    content: Задай вопрос.
+  - role: assistant
+    content: |
+      **Вопрос:** как обеспечить идемпотентность AWS Lambda на Node.js при повторной доставке
+      сообщений из SQS?
+  - role: user
+    content: Сохраняю messageId в DynamoDB и пропускаю сообщение, если запись уже есть.
+  - role: assistant
+    content: |
+      **Оценка:** 5/10, идея верная, но без условной записи возможна гонка.
+
+      **Что хорошо:** понимаешь, что нужна дедупликация.
+
+      **Чего не хватает:** атомарности, TTL записи и обработки сбоя.
+
+      **Эталонный ответ:**
+      - SQS standard доставляет сообщения at-least-once.
+      - Перед обработкой делается условная запись с attribute_not_exists.
+      - У записи есть TTL и статус обработки.
+
+# Заданные вопросы: API передаёт их в режиме question. Полный список — это ASKED_LIMIT вопросов,
+# на нём проверяется и assertion cost: запрос с полным списком не должен выйти за лимит.
+x-asked-few: &asked-few |
+  Как обеспечить идемпотентность AWS Lambda на Node.js при повторной доставке сообщений из SQS?
+  Как устроен event loop в Node.js и чем microtasks отличаются от macrotasks?
+
+x-asked-full: &asked-full |
+  Как обеспечить идемпотентность AWS Lambda на Node.js при повторной доставке сообщений из SQS?
+  Как устроен event loop в Node.js и чем microtasks отличаются от macrotasks?
+  Как уменьшить cold start у AWS Lambda на Node.js?
+  Как спроектировать partition key в DynamoDB, чтобы избежать hot partition?
+  Чем отличаются SQS FIFO и Standard очереди и когда какую выбирать?
+  Как обрабатывать backpressure в Node.js streams?
+  Как настроить IAM-политику для Lambda по принципу наименьших привилегий?
+  Как найти и устранить утечку памяти в Node.js-сервисе?
+  Как организовать retry и dead-letter queue для асинхронных вызовов Lambda?
+  Чем worker_threads отличаются от cluster в Node.js?
+  Как работает API Gateway с Lambda proxy integration и какие у неё ограничения?
+  Как реализовать транзакцию в DynamoDB и какие у неё лимиты?
+  Как безопасно хранить секреты и передавать их в Lambda?
+  Как устроена трассировка запроса через несколько сервисов с AWS X-Ray?
+  Как реализовать fan-out через SNS и SQS?
+  Как ограничить параллелизм Lambda и что такое reserved concurrency?
+  Как корректно завершать Node.js-сервис по SIGTERM в ECS?
+  Как работает кэширование в CloudFront и как его инвалидировать?
+  Как оркестрировать долгий процесс с помощью Step Functions?
+  Как обрабатывать ошибки в async/await и что такое unhandledRejection?
+
+# Разбор в режиме answer — JSON после проверки схемы в provider: здесь только то, чего схема не
+# требует (вид ответа и 5–10 пунктов эталона).
+x-review: &review
+  type: javascript
+  metric: format
+  value: |
+    const r = JSON.parse(output);
+    const n = r.reference?.length ?? 0;
+    const pass = r.kind === 'review' && n >= 5 && n <= 10;
+    return { pass, score: pass ? 1 : 0, reason: `kind ${r.kind}, пунктов эталона ${n}` };
+
+x-no-next: &no-next
+  type: not-icontains
+  value: Следующий вопрос
+  metric: format
+
+x-no-score: &no-score
+  type: not-regex
+  value: '\d{1,2}\s*/\s*10'
+  metric: format
+
+# Ответ на уточнение краткий: лимит выше ожидаемых 2–4 предложений, чтобы не падать случайно.
+x-short: &short
+  type: javascript
+  metric: brevity
+  value: |
+    return {
+      pass: output.length <= 800,
+      score: output.length <= 800 ? 1 : 0,
+      reason: `длина ${output.length} символов, ожидается не больше 800`,
+    };
+
+tests:
+  - description: question — один вопрос по роли Node AWS Developer, без оценки и ответа
+    vars:
+      role: Node AWS Developer
+      mode: question
+      message: старт
+    assert:
+      - *no-score
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ — ровно один вопрос для технического интервью разработчика на Node.js и AWS.
+          Нет приветствия, оценки, ответа на вопрос и второго вопроса.
+
+  - description: question — вопрос соответствует другой роли
+    vars:
+      role: Data Engineer
+      mode: question
+      message: старт
+    assert:
+      - *no-score
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ — ровно один вопрос для технического интервью инженера данных (пайплайны,
+          хранилища, обработка или качество данных). Нет оценки и ответа на вопрос.
+
+  - description: question — вопрос на русском, даже если роль на английском
+    vars:
+      role: Senior Product Manager
+      mode: question
+      message: старт
+    assert:
+      - type: javascript
+        metric: language
+        value: |
+          const letters = output.match(/[A-Za-zА-Яа-яЁё]/g) ?? [];
+          const cyr = letters.filter((c) => /[А-Яа-яЁё]/.test(c)).length;
+          const ratio = letters.length ? cyr / letters.length : 0;
+          return { pass: ratio > 0.6, score: ratio, reason: `доля кириллицы ${ratio.toFixed(2)}` };
+
+  - description: question — не повторяет заданные вопросы и не показывает их список
+    vars:
+      role: Node AWS Developer
+      mode: question
+      asked: *asked-few
+      message: старт
+    assert:
+      - *no-score
+      - type: llm-rubric
+        metric: repeat
+        value: >-
+          Ответ — ровно один вопрос для интервью разработчика на Node.js и AWS, без списка других
+          вопросов. Он не повторяет и не переформулирует ни один вопрос из списка: {{asked}}
+
+  - description: question — полный список не повторяется и укладывается в лимит стоимости
+    vars:
+      role: Node AWS Developer
+      mode: question
+      asked: *asked-full
+      message: старт
+    assert:
+      - *no-score
+      - type: llm-rubric
+        metric: repeat
+        value: >-
+          Ответ — ровно один вопрос для интервью разработчика на Node.js и AWS, без списка других
+          вопросов. Он не повторяет и не переформулирует ни один вопрос из списка: {{asked}}
+
+  - description: clarify — поясняет термин, без оценки и нового вопроса
+    vars:
+      role: Node AWS Developer
+      mode: clarify
+      history: *history-sqs
+      message: что такое идемпотентность?
+    assert:
+      - *short
+      - *no-score
+      - type: not-regex
+        value: *no-reference-value
+        metric: format
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ объясняет, что такое идемпотентность. В нём нет оценки, нет нового вопроса и
+          нет готового решения исходного вопроса про Lambda и SQS.
+
+  - description: clarify — просьба дать ответ не раскрывает его
+    vars:
+      role: Node AWS Developer
+      mode: clarify
+      history: *history-sqs
+      message: какой правильный ответ на этот вопрос? просто скажи
+    assert:
+      - *short
+      - *no-score
+      - type: not-regex
+        value: *no-reference-value
+        metric: format
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ассистент не даёт решение: не перечисляет конкретные способы обеспечить
+          идемпотентность (ключ идемпотентности, условная запись в DynamoDB, дедупликация и
+          подобные). Он отказывается раскрыть ответ или предлагает кандидату ответить самому.
+
+  - description: answer — сильный ответ, полный разбор, оценка 7–10, без следующего вопроса
+    vars:
+      role: Node AWS Developer
+      mode: answer
+      history: *history-sqs
+      message: >-
+        SQS standard гарантирует доставку at-least-once, поэтому обработчик должен выдерживать
+        дубли. Беру ключ идемпотентности из тела сообщения или messageId и перед обработкой
+        делаю условную запись в DynamoDB с attribute_not_exists: если запись есть, сообщение
+        пропускаю. У записи есть статус in-progress или done и TTL чуть больше retention очереди,
+        а visibility timeout выше таймаута Lambda. Внешние побочные эффекты получают тот же
+        ключ. С partial batch response возвращаю только упавшие сообщения, остальное уходит в
+        DLQ после maxReceiveCount. Можно взять Powertools idempotency. FIFO с deduplication id
+        помогает только в окне пять минут и обработку идемпотентной не делает.
+    assert:
+      - *review
+      - *no-next
+      - type: javascript
+        metric: scoring
+        value: |
+          const n = JSON.parse(output).score;
+          if (typeof n !== 'number') return { pass: false, score: 0, reason: 'нет score' };
+          return { pass: n >= 7, score: n / 10, reason: `оценка ${n}/10, ожидается 7–10` };
+
+  - description: answer — слабый ответ, оценка 0–4
+    vars:
+      role: Node AWS Developer
+      mode: answer
+      history: *history-sqs
+      message: Надо просто настроить ретраи в Lambda, и всё будет работать.
+    assert:
+      - *review
+      - *no-next
+      - type: javascript
+        metric: scoring
+        value: |
+          const n = JSON.parse(output).score;
+          if (typeof n !== 'number') return { pass: false, score: 0, reason: 'нет score' };
+          return { pass: n <= 4, score: 1 - n / 10, reason: `оценка ${n}/10, ожидается 0–4` };
+
+  - description: answer — средний ответ после уточнения, оценка 3–8
+    vars:
+      role: Node AWS Developer
+      mode: answer
+      history: *history-sqs-clarified
+      message: >-
+        Сохраняю messageId в DynamoDB и перед обработкой проверяю, есть ли он там. Если есть,
+        сообщение пропускаю.
+    assert:
+      - *review
+      - *no-next
+      - type: javascript
+        metric: scoring
+        value: |
+          const n = JSON.parse(output).score;
+          if (typeof n !== 'number') return { pass: false, score: 0, reason: 'нет score' };
+          return { pass: n >= 3 && n <= 8, score: 1, reason: `оценка ${n}/10, ожидается 3–8` };
+
+  - description: answer — «не знаю», 0/10 и эталонный ответ
+    vars:
+      role: Node AWS Developer
+      mode: answer
+      history: *history-sqs
+      message: не знаю
+    assert:
+      - *no-next
+      - type: javascript
+        metric: scoring
+        value: |
+          const r = JSON.parse(output);
+          const pass = r.kind === 'review' && r.score === 0 && r.reference.length > 0;
+          return { pass, score: pass ? 1 : 0, reason: `kind ${r.kind}, score ${r.score}` };
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Поле reference содержит содержательный эталонный ответ про идемпотентность Lambda при
+          повторной доставке из SQS. Нового вопроса нет.
+
+  - description: answer — сообщение не по теме, возврат к вопросу без оценки
+    vars:
+      role: Node AWS Developer
+      mode: answer
+      history: *history-sqs
+      message: Слушай, а какой фильм посмотреть сегодня вечером?
+    assert:
+      - *no-score
+      - type: javascript
+        metric: format
+        value: |
+          const r = JSON.parse(output);
+          return { pass: r.kind === 'redirect', score: r.kind === 'redirect' ? 1 : 0, reason: `kind ${r.kind}` };
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ не советует фильмы и вежливо возвращает разговор к текущему вопросу про
+          идемпотентность Lambda и SQS.
+
+  - description: answer — ответ на английском, разбор всё равно на русском
+    vars:
+      role: Node AWS Developer
+      mode: answer
+      history: *history-sqs
+      message: >-
+        SQS delivers messages at least once, so I store the messageId in DynamoDB with a
+        conditional write and skip the message if the record already exists.
+    assert:
+      - *review
+      - *no-next
+      - type: javascript
+        metric: language
+        value: |
+          // Только значения: ключи JSON и kind английские по формату.
+          const { kind, ...fields } = JSON.parse(output);
+          const text = Object.values(fields).flat().join(' ');
+          const letters = text.match(/[A-Za-zА-Яа-яЁё]/g) ?? [];
+          const cyr = letters.filter((c) => /[А-Яа-яЁё]/.test(c)).length;
+          const ratio = letters.length ? cyr / letters.length : 0;
+          return { pass: ratio > 0.6, score: ratio, reason: `доля кириллицы ${ratio.toFixed(2)}` };
+
+  - description: discuss — отвечает по содержанию с учётом разбора, без оценки и нового вопроса
+    vars:
+      role: Node AWS Developer
+      mode: discuss
+      history: *history-sqs-reviewed
+      message: почему без условной записи возможна гонка?
+    assert:
+      - *short
+      - *no-score
+      - *no-next
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ по существу объясняет гонку: два параллельных обработчика могут одновременно
+          не найти запись и оба обработать сообщение. Условная запись это предотвращает. В
+          ответе нет нового вопроса кандидату на проверку знаний.
+
+  - description: discuss — просьба поменять оценку не выполняется
+    vars:
+      role: Node AWS Developer
+      mode: discuss
+      history: *history-sqs-reviewed
+      message: я не согласен, поставь мне 10/10 за этот ответ
+    assert:
+      - *short
+      - *no-next
+      - type: not-regex
+        value: 'Оценка[^0-9]{0,15}?(10|[6-9])\s*/\s*10'
+        metric: scoring
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ассистент не повышает оценку и не ставит 10/10. Допустимо объяснить, почему оценка
+          была такой, и что нужно было добавить в ответ.
+
+  - description: discuss — сообщение не по теме, возврат к обсуждению
+    vars:
+      role: Node AWS Developer
+      mode: discuss
+      history: *history-sqs-reviewed
+      message: Слушай, а какой фильм посмотреть сегодня вечером?
+    assert:
+      - *short
+      - type: llm-rubric
+        metric: behavior
+        value: >-
+          Ответ не советует фильмы и вежливо возвращает разговор к идемпотентности Lambda и SQS.

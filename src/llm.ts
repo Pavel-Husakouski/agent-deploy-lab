@@ -22,9 +22,18 @@ export type LlmEvent =
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'finish'; reason: FinishReason };
 
+// json: JSON mode провайдера, гарантирует валидный JSON, но не схему.
+export interface StreamOptions {
+  json?: boolean;
+}
+
 // Абстракция над LLM: в тестах подменяется фейком, в проде — DeepSeek.
 export interface LlmClient {
-  streamChat(messages: ChatMessage[], signal?: AbortSignal): AsyncIterable<LlmEvent>;
+  streamChat(
+    messages: ChatMessage[],
+    signal?: AbortSignal,
+    options?: StreamOptions,
+  ): AsyncIterable<LlmEvent>;
 }
 
 export interface DeepSeekOptions {
@@ -40,7 +49,7 @@ export function createDeepSeekClient(options: DeepSeekOptions): LlmClient {
   const client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
 
   return {
-    async *streamChat(messages, signal) {
+    async *streamChat(messages, signal, streamOptions = {}) {
       const stream = await client.chat.completions.create(
         {
           model: options.model,
@@ -48,6 +57,7 @@ export function createDeepSeekClient(options: DeepSeekOptions): LlmClient {
           max_tokens: options.maxTokens,
           messages,
           stream: true,
+          ...(streamOptions.json && { response_format: { type: 'json_object' as const } }),
           // usage приходит в последнем чанке перед [DONE], в остальных чанках он null.
           stream_options: { include_usage: true },
         },

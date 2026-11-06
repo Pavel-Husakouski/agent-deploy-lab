@@ -13,6 +13,8 @@ export interface Metrics {
   tokens: Counter<'type' | 'mode'>;
   costUsd: Counter<'mode'>;
   truncated: Counter;
+  invalidOutput: Counter;
+  reviewScore: Histogram;
   recordUsage(usage: TokenUsage, mode: ChatMode): void;
 }
 
@@ -86,6 +88,18 @@ export function createMetrics(
     registers: [registry],
   });
 
+  const invalidOutput = new Counter({
+    name: 'agent_llm_invalid_output_total',
+    help: 'Ответы LLM в режиме answer, не прошедшие схему разбора (каждая попытка)',
+    registers: [registry],
+  });
+  const reviewScore = new Histogram({
+    name: 'agent_review_score',
+    help: 'Оценка ответа кандидата, 0–10',
+    buckets: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    registers: [registry],
+  });
+
   return {
     registry,
     requests,
@@ -94,6 +108,8 @@ export function createMetrics(
     tokens,
     costUsd,
     truncated,
+    invalidOutput,
+    reviewScore,
     recordUsage(usage, mode) {
       tokens.inc({ type: 'prompt', mode }, usage.promptTokens);
       tokens.inc({ type: 'completion', mode }, usage.completionTokens);
