@@ -166,6 +166,16 @@ agent ──(score review_score на trace запроса)──> Langfuse publi
 LiteLLM ждёт свой Postgres в init-контейнере. Langfuse web стартует раньше своего Postgres и
 перезапускается, пока база не готова: у chart Langfuse нет настройки, чтобы этого избежать.
 
+UI LiteLLM наружу из kind не проброшен, его открывает port-forward:
+
+```bash
+npm run litellm-ui              # держать открытым, UI на http://localhost:4000/ui
+npm run -s litellm-password     # пароль: логин admin, пароль — master key (sk-master-…)
+```
+
+Master key даёт полные права на шлюз: ключи, бюджеты, модели. У агента его нет, только virtual
+key.
+
 Проверка отказа по бюджету:
 
 ```bash
@@ -468,15 +478,17 @@ curl -s localhost:13000/metrics | grep ^agent_
 
 ## Разработка
 
-| Скрипт                   | Что делает                                    |
-|--------------------------|-----------------------------------------------|
-| `npm run typecheck`      | `tsc --noEmit`, strict                        |
-| `npm test`               | vitest, LLM и Redis заменены фейками          |
-| `npm run build`          | сборка `src` в `dist` (`tsconfig.build.json`) |
-| `npm run check:manifest` | проверка `release.json`, см. выше             |
-| `npm run eval`           | eval gate на promptfoo, см. выше              |
-| `npm run dev`            | API на хосте с перезапуском при изменениях    |
-| `npm run cli`            | консольный клиент                             |
+| Скрипт                     | Что делает                                                    |
+|----------------------------|---------------------------------------------------------------|
+| `npm run typecheck`        | `tsc --noEmit`, strict                                        |
+| `npm test`                 | vitest, LLM и Redis заменены фейками                          |
+| `npm run build`            | сборка `src` в `dist` (`tsconfig.build.json`)                 |
+| `npm run check:manifest`   | проверка `release.json`, см. выше                             |
+| `npm run eval`             | eval gate на promptfoo, см. выше                              |
+| `npm run dev`              | API на хосте с перезапуском при изменениях                    |
+| `npm run cli`              | консольный клиент                                             |
+| `npm run litellm-ui`       | port-forward UI LiteLLM на `localhost:4000`, Ctrl+C — закрыть |
+| `npm run litellm-password` | master key LiteLLM, он же пароль `admin` в UI                 |
 
 Структура:
 
