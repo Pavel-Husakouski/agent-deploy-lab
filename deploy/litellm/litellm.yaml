@@ -61,6 +61,20 @@ spec:
         # Deployment перезапустил под.
         config/revision: "1"
     spec:
+      # Без БД LiteLLM падает на миграциях и уходит в CrashLoopBackOff: ждём Postgres заранее.
+      initContainers:
+        - name: wait-postgres
+          image: postgres:17-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h litellm-postgres -p 5432 -U litellm; do sleep 2; done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:v1.108.9
