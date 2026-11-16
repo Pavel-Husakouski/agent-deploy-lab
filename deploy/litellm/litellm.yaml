@@ -1,0 +1,134 @@
+# LiteLLM Proxy: шлюз между агентом и провайдером LLM. Агент знает только alias модели из
+# release.json и свой virtual key, ключ DeepSeek есть только здесь. Каждый вызов уходит
+# трейсом в Langfuse (callback langfuse_otel), стоимость считается по model_info.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  labels:
+    app.kubernetes.io/name: litellm
+data:
+  config.yaml: |
+    model_list:
+      # Alias совпадает с model.id в release.json: смена провайдера — правка только этого файла.
+      - model_name: deepseek-flash
+        litellm_params:
+          model: deepseek/deepseek-flash
+          api_key: os.environ/DEEPSEEK_API_KEY
+        # Цены из release.json (за токен): по ним LiteLLM считает spend и бюджет ключа.
+        model_info:
+          input_cost_per_token: 0.0000003
+          output_cost_per_token: 0.0000012
+    router_settings:
+      num_retries: 2
+    litellm_settings:
+      callbacks: ["langfuse_otel"]
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+      database_url: os.environ/DATABASE_URL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  selector:
+    app.kubernetes.io/name: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+      annotations:
+        # subPath не обновляется на лету: после правки config.yaml поднять revision, чтобы
+        # Deployment перезапустил под.
+        config/revision: "1"
+    spec:
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:v1.108.9
+          args: ["--config", "/app/config.yaml", "--port", "4000"]
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  # Секреты создаёт make secret, в git их нет.
+                  name: deepseek
+                  key: DEEPSEEK_API_KEY
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm
+                  key: LITELLM_MASTER_KEY
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: litellm
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: postgresql://litellm:$(POSTGRES_PASSWORD)@litellm-postgres:5432/litellm
+            - name: LANGFUSE_HOST
+              value: http://langfuse-web.langfuse:3000
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-api
+                  key: LANGFUSE_PUBLIC_KEY
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-api
+                  key: LANGFUSE_SECRET_KEY
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+          # Старт с миграциями БД занимает до минуты.
+          startupProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          # readiness проверяет и БД: без неё ключи не проверить.
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            periodSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1536Mi
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config

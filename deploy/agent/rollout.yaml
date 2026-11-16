@@ -35,12 +35,30 @@ spec:
               value: "13000"
             - name: REDIS_URL
               value: redis://redis:6379
-            - name: DEEPSEEK_API_KEY
+            # LLM через LiteLLM Proxy: у агента только virtual key с бюджетом, ключа DeepSeek
+            # в namespace agent нет. Секреты создаёт make secret, в git их нет.
+            - name: LLM_BASE_URL
+              value: http://litellm.llm:4000
+            - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:
-                  # Секрет создаёт make up из переменной окружения, в git его нет.
-                  name: deepseek
-                  key: DEEPSEEK_API_KEY
+                  name: agent-llm
+                  key: LLM_API_KEY
+            - name: LLM_METADATA
+              value: "true"
+            # Langfuse: score разбора на trace, который пишет LiteLLM.
+            - name: LANGFUSE_HOST
+              value: http://langfuse-web.langfuse:3000
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-api
+                  key: LANGFUSE_PUBLIC_KEY
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-api
+                  key: LANGFUSE_SECRET_KEY
           readinessProbe:
             httpGet:
               path: /healthz

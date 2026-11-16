@@ -56,6 +56,7 @@ jobs:
             kubectl kustomize deploy/agent
             echo '---'
             cat deploy/redis/*.yaml
+            for f in deploy/litellm/*.yaml deploy/langfuse/*.yaml; do echo '---'; cat "$f"; done
           } | kubeconform -strict -summary -schema-location default -schema-location "$crds"
 
       - name: release version

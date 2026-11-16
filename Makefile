@@ -1,5 +1,6 @@
 # Стенд в kind: make up поднимает кластер и Argo CD, остальное Argo CD синхронизирует из git.
 # Ключ DeepSeek берётся только из переменной окружения DEEPSEEK_API_KEY, .env не читается.
+# Остальные секреты (LiteLLM, Langfuse) make secret генерирует сам, один раз.
 
 CLUSTER        := agent-deploy-lab
 KIND_CONFIG    := deploy/kind/cluster.yaml
@@ -8,12 +9,13 @@ ARGOCD_CHART   := 10.11.6
 ARGOCD_REPO    := https://argoproj.github.io/argo-helm
 # Ветка, из которой Argo CD берёт deploy/: make up REVISION=stage-4
 REVISION       ?= main
-WAIT_TIMEOUT   ?= 600
+WAIT_TIMEOUT   ?= 900
 
 KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM    := helm --kube-context kind-$(CLUSTER)
 
-.PHONY: up down cluster secret argocd root wait status argocd-password
+.PHONY: up down cluster secret argocd root wait status argocd-password langfuse-password \
+  llm-budget
 
 up: cluster secret argocd root wait status
 
@@ -28,11 +30,7 @@ cluster:
 	fi
 
 secret:
-	@test -n "$$DEEPSEEK_API_KEY" || { echo "задайте DEEPSEEK_API_KEY в окружении" >&2; exit 1; }
-	@$(KUBECTL) create namespace agent --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	@# Ключ идёт через stdin, а не аргументом: не виден в списке процессов.
-	@printf '%s' "$$DEEPSEEK_API_KEY" | $(KUBECTL) -n agent create secret generic deepseek \
-	  --from-file=DEEPSEEK_API_KEY=/dev/stdin --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@KUBECTL="$(KUBECTL)" scripts/k8s-secrets.sh
 
 argocd:
 	$(HELM) upgrade --install argocd argo-cd --repo $(ARGOCD_REPO) --version $(ARGOCD_CHART) \
@@ -52,7 +50,7 @@ wait:
 	    -o jsonpath='{range .items[*]}{.metadata.name}={.status.sync.status}/{.status.health.status}{"\n"}{end}'); \
 	  total=$$(printf '%s\n' "$$states" | grep -c '=' || true); \
 	  ready=$$(printf '%s\n' "$$states" | grep -c '=Synced/Healthy$$' || true); \
-	  if [ "$$total" -ge 5 ] && [ "$$ready" -eq "$$total" ]; then echo "все $$total Application готовы"; break; fi; \
+	  if [ "$$total" -ge 8 ] && [ "$$ready" -eq "$$total" ]; then echo "все $$total Application готовы"; break; fi; \
 	  if [ $$(date +%s) -ge $$end ]; then echo "timeout:"; printf '%s\n' "$$states"; exit 1; fi; \
 	  sleep 5; \
 	done
@@ -60,10 +58,22 @@ wait:
 status:
 	@$(KUBECTL) -n argocd get applications
 	@$(KUBECTL) get pods -n agent
+	@$(KUBECTL) get pods -n llm
+	@$(KUBECTL) get pods -n langfuse
 	@echo "API:        http://localhost:13000"
 	@echo "Argo CD UI: http://localhost:18080 (admin, пароль: make argocd-password)"
 	@echo "Prometheus: http://localhost:19090"
+	@echo "Langfuse:   http://localhost:13300 (admin@agent-deploy-lab.local, make langfuse-password)"
 
 argocd-password:
 	@$(KUBECTL) -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' \
 	  | base64 -d; echo
+
+langfuse-password:
+	@$(KUBECTL) -n langfuse get secret langfuse-init \
+	  -o jsonpath='{.data.LANGFUSE_INIT_USER_PASSWORD}' | base64 -d; echo
+
+# Бюджет virtual key агента в долларах: make llm-budget BUDGET=0.0001
+llm-budget:
+	@test -n "$(BUDGET)" || { echo "укажите BUDGET=<usd>" >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" scripts/llm-budget.sh $(BUDGET)

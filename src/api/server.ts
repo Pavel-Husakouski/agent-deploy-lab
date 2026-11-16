@@ -1,7 +1,9 @@
+import { randomBytes } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 import { makeRecord, type HistoryStore } from '../history.js';
-import type { LlmClient } from '../llm.js';
+import type { ScoreSink } from '../langfuse.js';
+import type { LlmClient, LlmTrace } from '../llm.js';
 import { createMetrics, type Metrics } from '../metrics.js';
 import { buildMessages, IdSchema, RoleSchema, userText } from '../prompt.js';
 import type { Release } from '../release.js';
@@ -13,6 +15,8 @@ export interface AppDeps {
   release: Release;
   // Если не передан, создаётся Registry без стандартных метрик процесса.
   metrics?: Metrics;
+  // Куда отправлять оценку разбора (Langfuse). Без него оценка есть только в метриках.
+  scores?: ScoreSink;
   logger?: FastifyServerOptions['logger'];
 }
 
@@ -95,6 +99,19 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
     const messages = buildMessages(promptTemplate, role, turn, history, asked);
     const userRecord = makeRecord('user', userText(turn));
+    const trace: LlmTrace = {
+      traceId: randomBytes(16).toString('hex'),
+      sessionId,
+      name: `chat-${mode}`,
+      tags: [
+        `release:${manifest.version}`,
+        `prompt:${manifest.prompt.id}`,
+        `model:${manifest.model.id}`,
+        `mode:${mode}`,
+      ],
+      release: manifest.version,
+      ...(clientId && { userId: clientId }),
+    };
 
     // Дальше отвечаем потоком SSE напрямую в raw-ответ.
     reply.hijack();
@@ -119,7 +136,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     // Один вызов LLM: onDelta получает фрагменты по мере прихода, результат — весь текст.
     const generate = async (onDelta: (text: string) => void, json = false): Promise<string> => {
       let text = '';
-      for await (const event of deps.llm.streamChat(messages, abort.signal, { json })) {
+      for await (const event of deps.llm.streamChat(messages, abort.signal, { json, trace })) {
         if (event.type === 'usage') {
           metrics.recordUsage(event.usage, mode);
           continue;
@@ -155,7 +172,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             );
           },
         );
-        if (review.kind === 'review') metrics.reviewScore.observe(review.score);
+        if (review.kind === 'review') {
+          metrics.reviewScore.observe(review.score);
+          // Не ждём: Langfuse — наблюдаемость, его сбой не должен задерживать или ломать ответ.
+          deps.scores
+            ?.record({ traceId: trace.traceId, name: 'review_score', value: review.score })
+            .catch((err: unknown) => {
+              req.log.warn({ err }, 'не удалось отправить score в Langfuse');
+            });
+        }
         answer = renderReview(review);
         raw.write(sseEvent(review, 'review'));
       } else {

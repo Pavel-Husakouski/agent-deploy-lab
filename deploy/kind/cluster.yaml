@@ -17,3 +17,7 @@ nodes:
       - containerPort: 30090
         hostPort: 19090
         listenAddress: 127.0.0.1
+      # Langfuse UI
+      - containerPort: 30300
+        hostPort: 13300
+        listenAddress: 127.0.0.1

@@ -6,3 +6,4 @@ targetRevision: main
 charts:
   argoRollouts: 2.43.8
   prometheus: 29.40.0
+  langfuse: 2.2.4

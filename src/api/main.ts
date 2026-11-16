@@ -1,7 +1,8 @@
 import { Redis } from 'ioredis';
 import { loadConfig } from '../config.js';
 import { RedisHistoryStore } from '../history.js';
-import { createDeepSeekClient } from '../llm.js';
+import { createLangfuseScores } from '../langfuse.js';
+import { createLlmClient } from '../llm.js';
 import { createMetrics } from '../metrics.js';
 import { loadRelease } from '../release.js';
 import { buildApp } from './server.js';
@@ -15,16 +16,26 @@ const { model } = release.manifest;
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
 
 const app = buildApp({
-  llm: createDeepSeekClient({
-    apiKey: config.DEEPSEEK_API_KEY,
-    baseURL: config.DEEPSEEK_BASE_URL,
+  llm: createLlmClient({
+    apiKey: config.LLM_API_KEY,
+    baseURL: config.LLM_BASE_URL,
     model: model.id,
     temperature: model.temperature,
     maxTokens: model.maxTokens,
+    sendMetadata: config.LLM_METADATA,
   }),
   store: new RedisHistoryStore(redis),
   release,
   metrics: createMetrics(release.manifest, { collectDefault: true }),
+  ...(config.LANGFUSE_HOST &&
+    config.LANGFUSE_PUBLIC_KEY &&
+    config.LANGFUSE_SECRET_KEY && {
+      scores: createLangfuseScores({
+        host: config.LANGFUSE_HOST,
+        publicKey: config.LANGFUSE_PUBLIC_KEY,
+        secretKey: config.LANGFUSE_SECRET_KEY,
+      }),
+    }),
   logger: { level: process.env['LOG_LEVEL'] ?? 'info' },
 });
 
