@@ -112,6 +112,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       release: manifest.version,
       ...(clientId && { userId: clientId }),
     };
+    // По traceId запрос из лога API находится в Langfuse.
+    req.log.info({ traceId: trace.traceId, mode }, 'вызов LLM');
 
     // Дальше отвечаем потоком SSE напрямую в raw-ответ.
     reply.hijack();

@@ -27,7 +27,7 @@ spec:
                 secretKeyRef:
                   name: litellm
                   key: AGENT_KEY
-            # Бюджет на 30 дней в долларах. Урезать для проверки: make llm-budget BUDGET=0.0001.
+            # Бюджет на 30 дней в долларах. Урезать для проверки: make llm-budget BUDGET=0.
             - name: MAX_BUDGET
               value: "1"
           command:

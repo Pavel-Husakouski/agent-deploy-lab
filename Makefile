@@ -73,7 +73,7 @@ langfuse-password:
 	@$(KUBECTL) -n langfuse get secret langfuse-init \
 	  -o jsonpath='{.data.LANGFUSE_INIT_USER_PASSWORD}' | base64 -d; echo
 
-# Бюджет virtual key агента в долларах: make llm-budget BUDGET=0.0001
+# Бюджет virtual key агента в долларах: make llm-budget BUDGET=0
 llm-budget:
 	@test -n "$(BUDGET)" || { echo "укажите BUDGET=<usd>" >&2; exit 1; }
 	@KUBECTL="$(KUBECTL)" scripts/llm-budget.sh $(BUDGET)

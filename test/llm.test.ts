@@ -6,6 +6,7 @@ import { createLlmClient, type LlmEvent, type LlmTrace } from '../src/llm.js';
 // Фейковый OpenAI-совместимый endpoint: запоминает тело запроса и отвечает коротким стримом.
 let server: Server | undefined;
 const bodies: Record<string, unknown>[] = [];
+const headers: Record<string, string | string[] | undefined>[] = [];
 
 async function startServer(): Promise<string> {
   server = createServer((req, res) => {
@@ -13,6 +14,7 @@ async function startServer(): Promise<string> {
     req.on('data', (chunk: Buffer) => (raw += chunk.toString()));
     req.on('end', () => {
       bodies.push(JSON.parse(raw) as Record<string, unknown>);
+      headers.push(req.headers);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const chunk = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
       chunk({ choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] });
@@ -27,6 +29,7 @@ async function startServer(): Promise<string> {
 
 afterEach(async () => {
   bodies.length = 0;
+  headers.length = 0;
   await new Promise((resolve) => server?.close(resolve));
   server = undefined;
 });
@@ -60,11 +63,13 @@ async function call(sendMetadata: boolean): Promise<LlmEvent[]> {
 }
 
 describe('createLlmClient', () => {
-  it('с sendMetadata отдаёт trace в metadata в формате LiteLLM', async () => {
+  it('с sendMetadata отдаёт trace в traceparent и metadata в формате LiteLLM', async () => {
     const events = await call(true);
 
+    expect(headers[0]?.['traceparent']).toMatch(
+      new RegExp(`^00-${TRACE.traceId}-[0-9a-f]{16}-01$`),
+    );
     expect(bodies[0]?.['metadata']).toEqual({
-      trace_id: TRACE.traceId,
       session_id: 's1',
       trace_name: 'chat-answer',
       generation_name: 'chat-answer',
@@ -88,5 +93,6 @@ describe('createLlmClient', () => {
     await call(false);
 
     expect(bodies[0]).not.toHaveProperty('metadata');
+    expect(headers[0]).not.toHaveProperty('traceparent');
   });
 });

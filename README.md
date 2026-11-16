@@ -9,6 +9,10 @@ Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на pr
 (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
 коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
 
+Готов и **этап 10**: в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и
+бюджетом, а каждый вызов виден трейсом в self-hosted Langfuse
+(см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
+
 Приложение — тренер к интервью на роль, которую выбирает клиент: задаёт вопрос, поясняет его
 по запросу, оценивает ответ по шкале 0–10, даёт эталонный ответ и обсуждает его, пока не нажат
 Enter. Какой system prompt и какая модель используются, задаёт [release.json](release.json).
@@ -59,30 +63,34 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 Тот же агент в kind. Руками ставится только Argo CD, остальное он синхронизирует из
 `deploy/` в git по схеме app-of-apps.
 
-Нужны `docker`, `kind`, `kubectl`, `helm`, `make` и около 3 GB RAM. Порты 13000, 18080 и 19090
-на `127.0.0.1` должны быть свободны, поэтому сначала `docker compose down`.
+Нужны `docker`, `kind`, `kubectl`, `helm`, `make`, `openssl` и около 5 GB RAM. Порты 13000, 13300,
+18080 и 19090 на `127.0.0.1` должны быть свободны, поэтому сначала `docker compose down`.
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...   # make читает ключ только из окружения, .env не читает
-make up                          # кластер, секрет, Argo CD, root-app, ожидание
+make up                          # кластер, секреты, Argo CD, root-app, ожидание
 npm run cli                      # тот же CLI, API на localhost:13000
 make down                        # удалить кластер целиком
 ```
 
-| Target                 | Действие                                                       |
-|------------------------|----------------------------------------------------------------|
-| `make up`              | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки  |
-|                        | `deploy/` из ветки до merge (по умолчанию `main`)              |
-| `make down`            | `kind delete cluster`                                          |
-| `make secret`          | Secret `deepseek` в namespace `agent` из `DEEPSEEK_API_KEY`    |
-| `make status`          | состояние Applications и подов, адреса UI                      |
-| `make argocd-password` | пароль `admin` для Argo CD UI                                  |
+| Target                   | Действие                                                       |
+|--------------------------|----------------------------------------------------------------|
+| `make up`                | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки  |
+|                          | `deploy/` из ветки до merge (по умолчанию `main`)              |
+| `make down`              | `kind delete cluster`                                          |
+| `make secret`            | Secret `deepseek` в `llm` из `DEEPSEEK_API_KEY`, остальные     |
+|                          | секреты генерирует один раз, см. ниже                          |
+| `make status`            | состояние Applications и подов, адреса UI                      |
+| `make argocd-password`   | пароль `admin` для Argo CD UI                                  |
+| `make langfuse-password` | пароль `admin@agent-deploy-lab.local` для Langfuse UI          |
+| `make llm-budget`        | бюджет virtual key агента: `BUDGET=0`, вернуть `BUDGET=1`      |
 
-| Адрес                    | Что                                         |
-|--------------------------|---------------------------------------------|
-| `http://localhost:13000` | API агента (NodePort 30000)                 |
-| `http://localhost:18080` | Argo CD UI, логин `admin`                   |
-| `http://localhost:19090` | Prometheus, например `agent_release_info`   |
+| Адрес                    | Что                                               |
+|--------------------------|---------------------------------------------------|
+| `http://localhost:13000` | API агента (NodePort 30000)                       |
+| `http://localhost:18080` | Argo CD UI, логин `admin`                         |
+| `http://localhost:19090` | Prometheus, например `agent_release_info`         |
+| `http://localhost:13300` | Langfuse UI, логин `admin@agent-deploy-lab.local` |
 
 Что синхронизирует Argo CD (`deploy/apps`, Helm chart с Application на компонент):
 
@@ -90,7 +98,11 @@ make down                        # удалить кластер целиком
 |------|-----------------|----------------------------------------------------|-----------------|
 | -1   | `argo-rollouts` | chart `argo-rollouts` 2.43.8                       | `argo-rollouts` |
 | -1   | `prometheus`    | chart `prometheus` 29.40.0, только server          | `monitoring`    |
+| -1   | `clickhouse`    | [deploy/langfuse](deploy/langfuse): один узел      | `langfuse`      |
 | 0    | `redis`         | [deploy/redis](deploy/redis): StatefulSet, AOF+PVC | `agent`         |
+| 0    | `litellm`       | [deploy/litellm](deploy/litellm): proxy, Postgres  | `llm`           |
+| 0    | `langfuse`      | chart `langfuse` 2.2.4: web, worker, Postgres,     | `langfuse`      |
+|      |                 | Valkey, SeaweedFS                                  |                 |
 | 1    | `agent`         | [deploy/agent](deploy/agent): Rollout, NodePort    | `agent`         |
 
 - У всех Application включены `automated`, `prune` и `selfHeal`: ручная правка в кластере
@@ -105,6 +117,82 @@ make down                        # удалить кластер целиком
   живёт до `make down`.
 - Версии charts, Argo CD и kind node image зафиксированы в `deploy/apps/values.yaml` и
   `Makefile`.
+
+## LLM gateway и Langfuse
+
+В кластере агент не ходит в DeepSeek напрямую:
+
+```text
+agent ──(virtual key, metadata: trace, session, теги)──> LiteLLM Proxy ──> DeepSeek
+                                                          └─ langfuse_otel ──> Langfuse
+agent ──(score review_score на trace запроса)──> Langfuse public API
+```
+
+**LiteLLM Proxy** ([deploy/litellm](deploy/litellm), образ `ghcr.io/berriai/litellm:v1.108.9`):
+
+- alias `deepseek-flash` совпадает с `model.id` в `release.json`, провайдер задаёт только
+  конфиг шлюза: смена провайдера (этап 9) не трогает агента;
+- ключ DeepSeek есть только в namespace `llm`, у агента — virtual key с бюджетом $1 на 30 дней.
+  Ключ регистрирует PostSync Job `litellm-agent-key`;
+- цены в `model_info` те же, что `model.pricing`: по ним LiteLLM считает spend ключа;
+- trace id задаёт агент и передаёт заголовком `traceparent`: поле `trace_id` в metadata
+  OTel-интеграция LiteLLM не использует. Тот же id агент пишет в лог (`вызов LLM`), по нему
+  запрос из лога находится в Langfuse;
+- `num_retries: 2` на сбои провайдера. Fallback на другую модель появится вместе со вторым
+  провайдером;
+- `stream_options.include_usage` и `response_format` доходят до DeepSeek как есть, поэтому
+  метрики стоимости и JSON mode разбора работают как без шлюза;
+- virtual keys, бюджеты и spend хранятся в своём Postgres.
+
+**Langfuse** (chart `langfuse` 2.2.4, Langfuse v4):
+
+- каждый вызов LLM — generation в trace. Один `POST /chat` — один trace, повтор разбора
+  попадает в тот же trace;
+- trace сгруппированы в сессии по `sessionId`, `clientId` идёт как user;
+- теги `release:<version>`, `prompt:<id>`, `model:<id>`, `mode:<mode>`: по ним в UI
+  сравниваются релизы;
+- оценка разбора уходит score `review_score` на trace. Сбой Langfuse только логируется,
+  ответ клиенту от него не зависит;
+- ClickHouse свой, один узел без Keeper: chart ставит его через ClickHouse operator с
+  cert-manager, для kind это лишние компоненты;
+- org, project и пользователь создаются при первом старте (`LANGFUSE_INIT_*`), регистрация
+  в UI выключена;
+- Langfuse v4 работает в режиме events_only: читать трейсы и score через public API v1 нельзя,
+  только UI и `/api/public/v2/observations`. Запись score через `POST /api/public/scores`
+  работает.
+
+Первый `make up` качает около 3 GB образов. На медленной сети `make wait` может выйти по
+таймауту, хотя стенд продолжает подниматься: `make wait` можно запустить ещё раз.
+LiteLLM ждёт свой Postgres в init-контейнере. Langfuse web стартует раньше своего Postgres и
+перезапускается, пока база не готова: у chart Langfuse нет настройки, чтобы этого избежать.
+
+Проверка отказа по бюджету:
+
+```bash
+make llm-budget BUDGET=0   # следующий запрос получит event: error
+                           # «422 Budget has been exceeded!»
+make llm-budget BUDGET=1   # вернуть
+```
+
+### Секреты в кластере
+
+`make secret` ([scripts/k8s-secrets.sh](scripts/k8s-secrets.sh)) обновляет `deepseek` из
+окружения при каждом запуске. Остальное генерирует один раз и не перезаписывает: новый `salt`
+или `encryption-key` сломал бы данные Langfuse.
+
+| Namespace  | Secret            | Что внутри                                      |
+|------------|-------------------|-------------------------------------------------|
+| `llm`      | `deepseek`        | ключ DeepSeek из `DEEPSEEK_API_KEY`             |
+| `llm`      | `litellm`         | master key, пароль Postgres, virtual key агента |
+| `llm`      | `langfuse-api`    | API-ключи проекта Langfuse для трейсов          |
+| `langfuse` | `langfuse-keys`   | `salt`, `encryption-key`, `nextauth-secret`     |
+| `langfuse` | `langfuse-init`   | org, project, API-ключи, пользователь UI        |
+| `langfuse` | `langfuse-*-auth` | пароли Postgres, Valkey, SeaweedFS, ClickHouse  |
+| `agent`    | `agent-llm`       | virtual key агента                              |
+| `agent`    | `langfuse-api`    | API-ключи проекта Langfuse для score            |
+
+Chart Langfuse умеет генерировать секреты сам, но под Argo CD helm `lookup` не видит кластер,
+и значения менялись бы на каждом sync.
 
 ## CLI
 
@@ -364,12 +452,19 @@ curl -s localhost:13000/metrics | grep ^agent_
 
 Модель, параметры и промпт задаёт `release.json`, через env они не переопределяются.
 
-| Переменная          | По умолчанию               | Описание                         |
-|---------------------|----------------------------|----------------------------------|
-| `DEEPSEEK_API_KEY`  | —                          | обязательна                      |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | endpoint OpenAI-совместимого API |
-| `REDIS_URL`         | `redis://localhost:6379`   | в compose `redis://redis:6379`   |
-| `PORT`              | `13000`                    |                                  |
+| Переменная            | По умолчанию               | Описание                                |
+|-----------------------|----------------------------|-----------------------------------------|
+| `LLM_API_KEY`         | `DEEPSEEK_API_KEY`         | обязательна одна из двух                |
+| `LLM_BASE_URL`        | `DEEPSEEK_BASE_URL` или    | OpenAI-совместимый endpoint: DeepSeek   |
+|                       | `https://api.deepseek.com` | или LiteLLM (`http://litellm.llm:4000`) |
+| `LLM_METADATA`        | `false`                    | trace в `metadata` запроса, для LiteLLM |
+| `LANGFUSE_HOST`       | —                          | score разбора в Langfuse; три           |
+| `LANGFUSE_PUBLIC_KEY` | —                          | переменные задаются вместе или          |
+| `LANGFUSE_SECRET_KEY` | —                          | не задаются                             |
+| `REDIS_URL`           | `redis://localhost:6379`   | в compose `redis://redis:6379`          |
+| `PORT`                | `13000`                    |                                         |
+
+В compose и eval агент ходит в DeepSeek напрямую, в кластере — через LiteLLM.
 
 ## Разработка
 
@@ -391,7 +486,9 @@ src/release.ts         схема release.json, загрузка промпта 
 src/manifest-check.ts  правила check:manifest (чистая функция)
 src/metrics.ts         метрики prom-client
 src/prompt.ts          формат роли, сборка system prompt и сообщений для LLM
-src/llm.ts             интерфейс LlmClient и клиент DeepSeek (openai, streaming, usage)
+src/llm.ts             интерфейс LlmClient и клиент OpenAI-совместимого API (streaming, usage,
+                       trace в metadata для LiteLLM)
+src/langfuse.ts        score в Langfuse через public API
 src/history.ts         HistoryStore, формат записей, реализация на ioredis
 src/api/server.ts      buildApp(deps): маршруты Fastify
 src/api/main.ts        точка входа API

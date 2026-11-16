@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import OpenAI from 'openai';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
@@ -25,7 +26,8 @@ export type LlmEvent =
 // Привязка вызова к trace в Langfuse: все вызовы одного POST /chat (в том числе повтор
 // разбора) попадают в один trace, сессии группируются по sessionId.
 export interface LlmTrace {
-  // 32 hex-символа: формат trace id в OpenTelemetry, через него LiteLLM пишет в Langfuse.
+  // 32 hex-символа: trace id OpenTelemetry. LiteLLM пишет в Langfuse через OTel и берёт его
+  // только из заголовка traceparent, поле trace_id в metadata игнорирует.
   traceId: string;
   sessionId: string;
   name: string;
@@ -62,7 +64,6 @@ export interface LlmClientOptions {
 // Поля metadata, которые LiteLLM передаёт в Langfuse (callback langfuse_otel).
 export function traceMetadata(trace: LlmTrace): Record<string, unknown> {
   return {
-    trace_id: trace.traceId,
     session_id: trace.sessionId,
     trace_name: trace.name,
     generation_name: trace.name,
@@ -72,12 +73,19 @@ export function traceMetadata(trace: LlmTrace): Record<string, unknown> {
   };
 }
 
+// W3C traceparent: trace id запроса и случайный span id вызова. Span агента в Langfuse не
+// экспортируется, generation LiteLLM ссылается на него как на родителя.
+export function traceparent(trace: LlmTrace): string {
+  return `00-${trace.traceId}-${randomBytes(8).toString('hex')}-01`;
+}
+
 export function createLlmClient(options: LlmClientOptions): LlmClient {
   // DeepSeek и LiteLLM совместимы с OpenAI Chat Completions API, поэтому используем пакет openai.
   const client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
 
   return {
     async *streamChat(messages, signal, streamOptions = {}) {
+      const trace = options.sendMetadata ? streamOptions.trace : undefined;
       const stream = await client.chat.completions.create(
         {
           model: options.model,
@@ -90,12 +98,9 @@ export function createLlmClient(options: LlmClientOptions): LlmClient {
           stream_options: { include_usage: true },
           // В типах openai metadata — Record<string, string> (stored completions OpenAI), а LiteLLM
           // ждёт в tags массив, поэтому приведение типа.
-          ...(options.sendMetadata &&
-            streamOptions.trace && {
-              metadata: traceMetadata(streamOptions.trace) as Record<string, string>,
-            }),
+          ...(trace && { metadata: traceMetadata(trace) as Record<string, string> }),
         },
-        { signal },
+        { signal, ...(trace && { headers: { traceparent: traceparent(trace) } }) },
       );
       let finishReason: FinishReason | undefined;
       for await (const chunk of stream) {

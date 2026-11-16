@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Меняет бюджет virtual key агента в LiteLLM: make llm-budget BUDGET=0.0001 — проверить отказ
+# Меняет бюджет virtual key агента в LiteLLM: make llm-budget BUDGET=0 — проверить отказ
 # по бюджету, BUDGET=1 — вернуть. Ключ идёт через stdin, master key уже есть в поде LiteLLM.
 set -euo pipefail
 
