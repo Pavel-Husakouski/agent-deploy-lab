@@ -14,9 +14,7 @@
     "eval": "tsx scripts/eval.ts",
     "dev": "tsx watch src/api/main.ts",
     "start": "tsx src/api/main.ts",
-    "cli": "tsx src/cli/main.ts",
-    "litellm-ui": "kubectl --context kind-agent-deploy-lab -n llm port-forward svc/litellm 4000:4000",
-    "litellm-password": "kubectl --context kind-agent-deploy-lab -n llm get secret litellm -o go-template='{{.data.LITELLM_MASTER_KEY | base64decode}}' && echo"
+    "cli": "tsx src/cli/main.ts"
   },
   "dependencies": {
     "fastify": "^5.12.7",

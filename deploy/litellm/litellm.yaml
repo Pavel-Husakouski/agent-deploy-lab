@@ -34,12 +34,15 @@ metadata:
   labels:
     app.kubernetes.io/name: litellm
 spec:
+  # NodePort: UI на localhost:14000 через extraPortMappings kind
+  type: NodePort
   selector:
     app.kubernetes.io/name: litellm
   ports:
     - name: http
       port: 4000
       targetPort: http
+      nodePort: 30400
 ---
 apiVersion: apps/v1
 kind: Deployment

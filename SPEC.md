@@ -204,7 +204,8 @@ bootstrap (make up):
 | Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
 | Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
 | agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
-| Доступ        | kind `extraPortMappings`: API 13000, Argo CD 18080, Prometheus 19090    |
+| Доступ        | kind `extraPortMappings`: API 13000, Argo CD 18080, Prometheus 19090,   |
+|               | Langfuse 13300, LiteLLM 14000, ClickHouse 18123 и 19000                 |
 | Роль          | свободный текст от клиента, формат и eval injection, не хранится в API  |
 | Режим хода    | `mode` в запросе, подставляет API, текст пользователя на него не влияет |
 | Контекст      | сессия = вопрос и обсуждение, разбор между сессиями не передаётся       |

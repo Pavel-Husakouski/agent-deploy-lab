@@ -15,7 +15,7 @@ KUBECTL := kubectl --context kind-$(CLUSTER)
 HELM    := helm --kube-context kind-$(CLUSTER)
 
 .PHONY: up down cluster secret argocd root wait status argocd-password langfuse-password \
-  llm-budget
+  litellm-password clickhouse-password llm-budget
 
 up: cluster secret argocd root wait status
 
@@ -64,6 +64,8 @@ status:
 	@echo "Argo CD UI: http://localhost:18080 (admin, пароль: make argocd-password)"
 	@echo "Prometheus: http://localhost:19090"
 	@echo "Langfuse:   http://localhost:13300 (admin@agent-deploy-lab.local, make langfuse-password)"
+	@echo "LiteLLM:    http://localhost:14000/ui (admin, make litellm-password)"
+	@echo "ClickHouse: http://localhost:18123/play, native :19000 (clickhouse, make clickhouse-password)"
 
 argocd-password:
 	@$(KUBECTL) -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' \
@@ -72,6 +74,15 @@ argocd-password:
 langfuse-password:
 	@$(KUBECTL) -n langfuse get secret langfuse-init \
 	  -o jsonpath='{.data.LANGFUSE_INIT_USER_PASSWORD}' | base64 -d; echo
+
+# Master key LiteLLM, он же пароль admin в UI
+litellm-password:
+	@$(KUBECTL) -n llm get secret litellm \
+	  -o jsonpath='{.data.LITELLM_MASTER_KEY}' | base64 -d; echo
+
+clickhouse-password:
+	@$(KUBECTL) -n langfuse get secret langfuse-clickhouse-auth \
+	  -o jsonpath='{.data.password}' | base64 -d; echo
 
 # Бюджет virtual key агента в долларах: make llm-budget BUDGET=0
 llm-budget:

@@ -21,3 +21,14 @@ nodes:
       - containerPort: 30300
         hostPort: 13300
         listenAddress: 127.0.0.1
+      # LiteLLM UI и API
+      - containerPort: 30400
+        hostPort: 14000
+        listenAddress: 127.0.0.1
+      # ClickHouse Langfuse: HTTP (play) и native-протокол
+      - containerPort: 30123
+        hostPort: 18123
+        listenAddress: 127.0.0.1
+      - containerPort: 30900
+        hostPort: 19000
+        listenAddress: 127.0.0.1

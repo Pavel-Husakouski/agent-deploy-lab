@@ -64,7 +64,8 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 `deploy/` в git по схеме app-of-apps.
 
 Нужны `docker`, `kind`, `kubectl`, `helm`, `make`, `openssl` и около 5 GB RAM. Порты 13000, 13300,
-18080 и 19090 на `127.0.0.1` должны быть свободны, поэтому сначала `docker compose down`.
+14000, 18080, 18123, 19000 и 19090 на `127.0.0.1` должны быть свободны, поэтому сначала
+`docker compose down`.
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...   # make читает ключ только из окружения, .env не читает
@@ -73,17 +74,19 @@ npm run cli                      # тот же CLI, API на localhost:13000
 make down                        # удалить кластер целиком
 ```
 
-| Target                   | Действие                                                       |
-|--------------------------|----------------------------------------------------------------|
-| `make up`                | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки  |
-|                          | `deploy/` из ветки до merge (по умолчанию `main`)              |
-| `make down`              | `kind delete cluster`                                          |
-| `make secret`            | Secret `deepseek` в `llm` из `DEEPSEEK_API_KEY`, остальные     |
-|                          | секреты генерирует один раз, см. ниже                          |
-| `make status`            | состояние Applications и подов, адреса UI                      |
-| `make argocd-password`   | пароль `admin` для Argo CD UI                                  |
-| `make langfuse-password` | пароль `admin@agent-deploy-lab.local` для Langfuse UI          |
-| `make llm-budget`        | бюджет virtual key агента: `BUDGET=0`, вернуть `BUDGET=1`      |
+| Target                     | Действие                                                      |
+|----------------------------|---------------------------------------------------------------|
+| `make up`                  | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки |
+|                            | `deploy/` из ветки до merge (по умолчанию `main`)             |
+| `make down`                | `kind delete cluster`                                         |
+| `make secret`              | Secret `deepseek` в `llm` из `DEEPSEEK_API_KEY`, остальные    |
+|                            | секреты генерирует один раз, см. ниже                         |
+| `make status`              | состояние Applications и подов, адреса UI                     |
+| `make argocd-password`     | пароль `admin` для Argo CD UI                                 |
+| `make langfuse-password`   | пароль `admin@agent-deploy-lab.local` для Langfuse UI         |
+| `make litellm-password`    | master key LiteLLM, он же пароль `admin` в UI                 |
+| `make clickhouse-password` | пароль пользователя `clickhouse` в ClickHouse Langfuse        |
+| `make llm-budget`          | бюджет virtual key агента: `BUDGET=0`, вернуть `BUDGET=1`     |
 
 | Адрес                    | Что                                               |
 |--------------------------|---------------------------------------------------|
@@ -91,6 +94,9 @@ make down                        # удалить кластер целиком
 | `http://localhost:18080` | Argo CD UI, логин `admin`                         |
 | `http://localhost:19090` | Prometheus, например `agent_release_info`         |
 | `http://localhost:13300` | Langfuse UI, логин `admin@agent-deploy-lab.local` |
+| `http://localhost:14000` | LiteLLM, UI на `/ui`, логин `admin`               |
+| `http://localhost:18123` | ClickHouse Langfuse, SQL на `/play`, `clickhouse` |
+| `localhost:19000`        | ClickHouse, native-протокол для clickhouse-client |
 
 Что синхронизирует Argo CD (`deploy/apps`, Helm chart с Application на компонент):
 
@@ -177,12 +183,8 @@ agent ──(score review_score на trace запроса)──> Langfuse publi
 LiteLLM ждёт свой Postgres в init-контейнере. Langfuse web стартует раньше своего Postgres и
 перезапускается, пока база не готова: у chart Langfuse нет настройки, чтобы этого избежать.
 
-UI LiteLLM наружу из kind не проброшен, его открывает port-forward:
-
-```bash
-npm run litellm-ui              # держать открытым, UI на http://localhost:4000/ui
-npm run -s litellm-password     # пароль: логин admin, пароль — master key (sk-master-…)
-```
+UI LiteLLM открыт на http://localhost:14000/ui: логин `admin`, пароль — master key
+(`make litellm-password`, `sk-master-…`).
 
 Master key даёт полные права на шлюз: ключи, бюджеты, модели. У агента его нет, только virtual
 key.
@@ -498,8 +500,6 @@ curl -s localhost:13000/metrics | grep ^agent_
 | `npm run eval`             | eval gate на promptfoo, см. выше                              |
 | `npm run dev`              | API на хосте с перезапуском при изменениях                    |
 | `npm run cli`              | консольный клиент                                             |
-| `npm run litellm-ui`       | port-forward UI LiteLLM на `localhost:4000`, Ctrl+C — закрыть |
-| `npm run litellm-password` | master key LiteLLM, он же пароль `admin` в UI                 |
 
 Структура:
 
