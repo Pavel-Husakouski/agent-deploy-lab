@@ -117,6 +117,14 @@ make down                        # удалить кластер целиком
   живёт до `make down`.
 - Версии charts, Argo CD и kind node image зафиксированы в `deploy/apps/values.yaml` и
   `Makefile`.
+- Фоновая нагрузка урезана под один узел: Prometheus не собирает метрики apiserver и kubelet
+  (CPU и память подов есть в метриках cAdvisor), у Redis и Postgres LiteLLM TCP-пробы вместо
+  exec, у Postgres Langfuse пробы раз в 30 с, в Langfuse worker выключены ненужные фоновые
+  циклы. CPU подов в Prometheus:
+
+  ```promql
+  sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!=""}[5m]))
+  ```
 
 ## LLM gateway и Langfuse
 

@@ -198,6 +198,8 @@ bootstrap (make up):
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
 | Prometheus    | chart `prometheus` (только server, без PVC), не kube-prometheus-stack   |
+|               | без jobs `kubernetes-api-servers` и `kubernetes-nodes`: главная         |
+|               | фоновая нагрузка на apiserver, CPU подов есть в cAdvisor                |
 | Redis в k8s   | свои манифесты (StatefulSet, AOF на PVC), без Bitnami chart             |
 | Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
 | Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
