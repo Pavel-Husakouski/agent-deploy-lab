@@ -6,7 +6,8 @@
 # раз в секунду, сэмплы профайлера, свой лог и историю merge: в простое это ~60–100m CPU и
 # сотни merge в час, при том что данных Langfuse — сотни килобайт. Оставлен только query_log
 # с TTL 1 день: его читает Langfuse worker. Остальной холостой фон: задачи MergeTree на каждую
-# таблицу раз в секунду, пул на 512 потоков, лог уровня trace. Merge при объёме стенда
+# таблицу раз в секунду, пул на 512 потоков, лог уровня trace
+# с асинхронным логгером. Merge при объёме стенда
 # подождут, пулы репликации, Kafka и distributed-таблиц не нужны.
 apiVersion: v1
 kind: ConfigMap
@@ -45,7 +46,9 @@ data:
         <flush_interval_milliseconds>7500</flush_interval_milliseconds>
       </query_log>
       <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>
-      <background_schedule_pool_size>16</background_schedule_pool_size>
+      <!-- Каждый поток этого пула и асинхронного логгера просыпается 100 раз в секунду, даже
+           без работы: CPU в простое растёт с числом потоков, а не с нагрузкой. -->
+      <background_schedule_pool_size>4</background_schedule_pool_size>
       <background_buffer_flush_schedule_pool_size>1</background_buffer_flush_schedule_pool_size>
       <background_message_broker_schedule_pool_size>1</background_message_broker_schedule_pool_size>
       <background_distributed_schedule_pool_size>1</background_distributed_schedule_pool_size>
@@ -54,6 +57,7 @@ data:
       <memory_worker_period_ms>1000</memory_worker_period_ms>
       <logger>
         <level>warning</level>
+        <async>false</async>
       </logger>
       <merge_tree>
         <merge_tree_clear_old_parts_interval_seconds>30</merge_tree_clear_old_parts_interval_seconds>
@@ -106,7 +110,7 @@ spec:
         app.kubernetes.io/name: clickhouse
       annotations:
         # subPath не обновляется на лету: после правки clickhouse-config поднять revision.
-        config/revision: "2"
+        config/revision: "3"
     spec:
       securityContext:
         fsGroup: 101
