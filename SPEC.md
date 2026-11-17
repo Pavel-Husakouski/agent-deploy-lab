@@ -215,7 +215,8 @@ bootstrap (make up):
 | LLM gateway   | LiteLLM Proxy `v1.108.9` (LTS), свои манифесты, Postgres для ключей     |
 | Трейсы        | callback `langfuse_otel`: Langfuse v4 принимает трейсы по OTel          |
 | ClickHouse    | свой StatefulSet на один узел: chart тянет operator, Keeper и           |
-|               | cert-manager                                                            |
+|               | cert-manager; `system.*_log` и профайлер выключены, кроме `query_log`   |
+|               | с TTL 1 день: в простое они съедали больше всего CPU                    |
 | Секреты LLM   | `make secret`, не chart Langfuse: под Argo CD нет `lookup`              |
 | Score         | агент шлёт `review_score` в public API Langfuse, trace id задаёт сам и  |
 |               | передаёт LiteLLM в `traceparent`: `trace_id` из metadata не работает    |

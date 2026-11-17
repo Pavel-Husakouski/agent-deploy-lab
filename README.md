@@ -154,7 +154,9 @@ agent ──(score review_score на trace запроса)──> Langfuse publi
 - оценка разбора уходит score `review_score` на trace. Сбой Langfuse только логируется,
   ответ клиенту от него не зависит;
 - ClickHouse свой, один узел без Keeper: chart ставит его через ClickHouse operator с
-  cert-manager, для kind это лишние компоненты;
+  cert-manager, для kind это лишние компоненты. Системные логи `system.*_log` и профайлер
+  запросов выключены, остался `query_log` с TTL 1 день: иначе ClickHouse тратит CPU в простое
+  на свои метрики и сотни merge в час;
 - org, project и пользователь создаются при первом старте (`LANGFUSE_INIT_*`), регистрация
   в UI выключена;
 - Langfuse v4 работает в режиме events_only: читать трейсы и score через public API v1 нельзя,
