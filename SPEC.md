@@ -218,7 +218,8 @@ bootstrap (make up):
 | Трейсы        | callback `langfuse_otel`: Langfuse v4 принимает трейсы по OTel          |
 | ClickHouse    | свой StatefulSet на один узел: chart тянет operator, Keeper и           |
 |               | cert-manager; `system.*_log` и профайлер выключены, кроме `query_log`   |
-|               | с TTL 1 день: в простое они съедали больше всего CPU                    |
+|               | с TTL 1 день; 2 потока асинхронных вставок вместо 16: в простое они     |
+|               | просыпаются 100 раз в секунду                                           |
 | Секреты LLM   | `make secret`, не chart Langfuse: под Argo CD нет `lookup`              |
 | Score         | агент шлёт `review_score` в public API Langfuse, trace id задаёт сам и  |
 |               | передаёт LiteLLM в `traceparent`: `trace_id` из metadata не работает    |
