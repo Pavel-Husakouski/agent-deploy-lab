@@ -34,6 +34,13 @@ spec:
             type: NodePort
             servicePort: 9090
             nodePort: 30090
+        # Метрики apiserver (~42 тыс. рядов за scrape) и kubelet стенду не нужны, а их сбор —
+        # главная фоновая нагрузка на apiserver. CPU и память подов дают метрики cAdvisor.
+        scrapeConfigs:
+          kubernetes-api-servers:
+            enabled: false
+          kubernetes-nodes:
+            enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

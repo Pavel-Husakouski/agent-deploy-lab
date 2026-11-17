@@ -53,15 +53,17 @@ spec:
           ports:
             - name: postgres
               containerPort: 5432
+          # TCP вместо exec pg_isready: exec-проба — новый процесс через containerd. Готовность
+          # базы к запросам проверяют init-контейнер LiteLLM и его /health/readiness.
           readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "litellm", "-d", "litellm"]
-            periodSeconds: 5
-          livenessProbe:
-            exec:
-              command: ["pg_isready", "-U", "litellm", "-d", "litellm"]
+            tcpSocket:
+              port: postgres
             periodSeconds: 10
-            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            periodSeconds: 30
+            failureThreshold: 3
           resources:
             requests:
               cpu: 50m
