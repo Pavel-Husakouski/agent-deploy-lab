@@ -1,6 +1,59 @@
 # ClickHouse для Langfuse: трейсы, observations и scores. Один узел без Keeper и operator:
 # chart Langfuse ставит ClickHouse через ClickHouse operator с cert-manager, для kind это
 # три лишних компонента. Langfuse работает с ним в режиме CLICKHOUSE_CLUSTER_ENABLED=false.
+#
+# Профиль ClickHouse под один узел стенда. По умолчанию ClickHouse пишет в system.* метрики
+# раз в секунду, сэмплы профайлера, свой лог и историю merge: в простое это ~60–100m CPU и
+# сотни merge в час, при том что данных Langfuse — сотни килобайт. Оставлен только query_log
+# с TTL 1 день, чтобы было чем отлаживать запросы Langfuse.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  labels:
+    app.kubernetes.io/name: clickhouse
+data:
+  low-cpu.xml: |
+    <clickhouse>
+      <aggregated_zookeeper_log remove="1"/>
+      <asynchronous_insert_log remove="1"/>
+      <asynchronous_metric_log remove="1"/>
+      <background_schedule_pool_log remove="1"/>
+      <backup_log remove="1"/>
+      <blob_storage_log remove="1"/>
+      <delta_lake_metadata_log remove="1"/>
+      <error_log remove="1"/>
+      <iceberg_metadata_log remove="1"/>
+      <instrumentation_trace_log remove="1"/>
+      <metric_log remove="1"/>
+      <opentelemetry_span_log remove="1"/>
+      <part_log remove="1"/>
+      <processors_profile_log remove="1"/>
+      <query_metric_log remove="1"/>
+      <query_thread_log remove="1"/>
+      <query_views_log remove="1"/>
+      <text_log remove="1"/>
+      <trace_log remove="1"/>
+      <zookeeper_connection_log remove="1"/>
+      <zookeeper_log remove="1"/>
+      <query_log replace="1">
+        <database>system</database>
+        <table>query_log</table>
+        <engine>ENGINE = MergeTree PARTITION BY event_date ORDER BY event_time TTL event_date + INTERVAL 1 DAY DELETE</engine>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+      </query_log>
+      <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>
+    </clickhouse>
+  users-low-cpu.xml: |
+    <clickhouse>
+      <profiles>
+        <default>
+          <query_profiler_real_time_period_ns>0</query_profiler_real_time_period_ns>
+          <query_profiler_cpu_time_period_ns>0</query_profiler_cpu_time_period_ns>
+        </default>
+      </profiles>
+    </clickhouse>
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -34,6 +87,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: clickhouse
+      annotations:
+        # subPath не обновляется на лету: после правки clickhouse-config поднять revision.
+        config/revision: "1"
     spec:
       securityContext:
         fsGroup: 101
@@ -75,6 +131,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/clickhouse
+            # Файлами через subPath, а не каталогом: entrypoint образа пишет в users.d
+            # пользователя из CLICKHOUSE_USER.
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/low-cpu.xml
+              subPath: low-cpu.xml
+            - name: config
+              mountPath: /etc/clickhouse-server/users.d/low-cpu.xml
+              subPath: users-low-cpu.xml
+      volumes:
+        - name: config
+          configMap:
+            name: clickhouse-config
   volumeClaimTemplates:
     - metadata:
         name: data
