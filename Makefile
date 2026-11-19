@@ -1,69 +1,67 @@
-# Стенд в kind: make up поднимает кластер и Argo CD, остальное Argo CD синхронизирует из git.
-# Ключ DeepSeek берётся только из переменной окружения DEEPSEEK_API_KEY, .env не читается.
+# Стенд агента — тенант llm-platform: кластер kind, Argo CD, LiteLLM, Langfuse, Prometheus и
+# Argo Rollouts поднимает платформа (make -C $(PLATFORM_DIR) up). make up здесь получает ключи
+# тенанта (make tenant платформы) и кладёт root-app агента в общий Argo CD, остальное Argo CD
+# синхронизирует из git.
 
-CLUSTER        := agent-deploy-lab
-KIND_CONFIG    := deploy/kind/cluster.yaml
-KIND_IMAGE     := kindest/node:v1.37.0
-ARGOCD_CHART   := 10.11.6
-ARGOCD_REPO    := https://argoproj.github.io/argo-helm
+PLATFORM_DIR   ?= ../llm-platform
+PLATFORM       := llm-platform
 # Ветка, из которой Argo CD берёт deploy/: make up REVISION=stage-4
 REVISION       ?= main
-WAIT_TIMEOUT   ?= 600
+WAIT_TIMEOUT   ?= 900
+# Application агента: make wait не ждёт Application платформы и других тенантов.
+APPS           := agent-deploy-lab redis agent
 
-KUBECTL := kubectl --context kind-$(CLUSTER)
-HELM    := helm --kube-context kind-$(CLUSTER)
+# Тенант платформы: virtual key LiteLLM, проект Langfuse и Secret platform-llm в namespace agent.
+TENANT         := agent
+NAMESPACE      := agent
+BUDGET         ?= 1
+MODELS         ?= deepseek-flash
 
-.PHONY: up down cluster secret argocd root wait status argocd-password
+KUBECTL := kubectl --context kind-$(PLATFORM)
 
-up: cluster secret argocd root wait status
+.PHONY: up down platform tenant root wait status
 
+up: platform tenant root wait status
+
+# Удаляет только приложения агента: finalizer root-app снимает agent и redis. Платформа и
+# ключи тенанта остаются, следующий make up возьмёт те же ключи.
 down:
-	kind delete cluster --name $(CLUSTER)
+	$(KUBECTL) -n argocd delete application agent-deploy-lab --ignore-not-found --wait
+	$(KUBECTL) delete namespace $(NAMESPACE) --ignore-not-found --wait
 
-cluster:
-	@if kind get clusters | grep -qx '$(CLUSTER)'; then \
-	  echo "cluster $(CLUSTER) уже есть"; \
-	else \
-	  kind create cluster --config $(KIND_CONFIG) --image $(KIND_IMAGE); \
-	fi
+platform:
+	@kind get clusters | grep -qx '$(PLATFORM)' \
+	  || { echo "кластера $(PLATFORM) нет: make -C $(PLATFORM_DIR) up" >&2; exit 1; }
+	@s=$$($(KUBECTL) -n argocd get application $(PLATFORM) \
+	  -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || true); \
+	[ "$$s" = Synced/Healthy ] \
+	  || { echo "платформа не готова ($${s:-нет Application $(PLATFORM)}): make -C $(PLATFORM_DIR) up" >&2; exit 1; }
 
-secret:
-	@test -n "$$DEEPSEEK_API_KEY" || { echo "задайте DEEPSEEK_API_KEY в окружении" >&2; exit 1; }
-	@$(KUBECTL) create namespace agent --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	@# Ключ идёт через stdin, а не аргументом: не виден в списке процессов.
-	@printf '%s' "$$DEEPSEEK_API_KEY" | $(KUBECTL) -n agent create secret generic deepseek \
-	  --from-file=DEEPSEEK_API_KEY=/dev/stdin --dry-run=client -o yaml | $(KUBECTL) apply -f -
-
-argocd:
-	$(HELM) upgrade --install argocd argo-cd --repo $(ARGOCD_REPO) --version $(ARGOCD_CHART) \
-	  --namespace argocd --create-namespace \
-	  --values deploy/bootstrap/argocd-values.yaml --wait --timeout 10m
+tenant:
+	$(MAKE) -C $(PLATFORM_DIR) tenant NAME=$(TENANT) NS=$(NAMESPACE) BUDGET=$(BUDGET) MODELS=$(MODELS)
 
 root:
 	sed 's/targetRevision: main/targetRevision: $(REVISION)/' deploy/bootstrap/root-app.yaml \
 	  | $(KUBECTL) apply -f -
 
-# Ждём, пока все Application станут Synced и Healthy.
+# Ждём, пока все Application агента станут Synced и Healthy.
 wait:
 	@echo "ждём Synced/Healthy (до $(WAIT_TIMEOUT)s)"
 	@end=$$(( $$(date +%s) + $(WAIT_TIMEOUT) )); \
 	while :; do \
-	  states=$$($(KUBECTL) -n argocd get applications \
-	    -o jsonpath='{range .items[*]}{.metadata.name}={.status.sync.status}/{.status.health.status}{"\n"}{end}'); \
-	  total=$$(printf '%s\n' "$$states" | grep -c '=' || true); \
-	  ready=$$(printf '%s\n' "$$states" | grep -c '=Synced/Healthy$$' || true); \
-	  if [ "$$total" -ge 5 ] && [ "$$ready" -eq "$$total" ]; then echo "все $$total Application готовы"; break; fi; \
-	  if [ $$(date +%s) -ge $$end ]; then echo "timeout:"; printf '%s\n' "$$states"; exit 1; fi; \
+	  pending=''; \
+	  for app in $(APPS); do \
+	    s=$$($(KUBECTL) -n argocd get application $$app \
+	      -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || true); \
+	    [ "$$s" = Synced/Healthy ] || pending="$$pending $$app=$${s:-missing}"; \
+	  done; \
+	  if [ -z "$$pending" ]; then echo "все Application агента готовы"; break; fi; \
+	  if [ $$(date +%s) -ge $$end ]; then echo "timeout:$$pending"; exit 1; fi; \
 	  sleep 5; \
 	done
 
 status:
-	@$(KUBECTL) -n argocd get applications
-	@$(KUBECTL) get pods -n agent
+	@$(KUBECTL) -n argocd get applications $(APPS)
+	@$(KUBECTL) get pods -n $(NAMESPACE)
 	@echo "API:        http://localhost:13000"
-	@echo "Argo CD UI: http://localhost:18080 (admin, пароль: make argocd-password)"
-	@echo "Prometheus: http://localhost:19090"
-
-argocd-password:
-	@$(KUBECTL) -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' \
-	  | base64 -d; echo
+	@echo "Платформа (Argo CD, Langfuse, LiteLLM, Prometheus): make -C $(PLATFORM_DIR) status"

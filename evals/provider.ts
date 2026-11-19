@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import {
-  createDeepSeekClient,
+  createLlmClient,
   type FinishReason,
   type TokenUsage,
 } from '../src/llm.js';
@@ -73,9 +73,9 @@ export default class TrainerReleaseProvider {
     const { manifest, systemPrompt } = await loadRelease(REPO_ROOT);
     // Из конфигурации API нужны только ключ и base URL, остальное задаёт manifest.
     const config = loadConfig();
-    const llm = createDeepSeekClient({
-      apiKey: config.DEEPSEEK_API_KEY,
-      baseURL: config.DEEPSEEK_BASE_URL,
+    const llm = createLlmClient({
+      apiKey: config.LLM_API_KEY,
+      baseURL: config.LLM_BASE_URL,
       model: manifest.model.id,
       temperature: manifest.model.temperature,
       maxTokens: manifest.model.maxTokens,

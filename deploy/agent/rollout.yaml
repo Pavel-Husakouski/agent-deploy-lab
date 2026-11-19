@@ -30,17 +30,19 @@ spec:
           ports:
             - name: http
               containerPort: 13000
+          # Контракт тенанта llm-platform: LLM_BASE_URL и LLM_API_KEY (virtual key LiteLLM с
+          # бюджетом), LANGFUSE_HOST и ключи проекта Langfuse агента для score на trace, который
+          # пишет LiteLLM. Секрет создаёт make tenant, в git его нет.
+          envFrom:
+            - secretRef:
+                name: platform-llm
           env:
             - name: PORT
               value: "13000"
             - name: REDIS_URL
               value: redis://redis:6379
-            - name: DEEPSEEK_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  # Секрет создаёт make up из переменной окружения, в git его нет.
-                  name: deepseek
-                  key: DEEPSEEK_API_KEY
+            - name: LLM_METADATA
+              value: "true"
           readinessProbe:
             httpGet:
               path: /healthz

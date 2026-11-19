@@ -41,15 +41,17 @@ spec:
           ports:
             - name: redis
               containerPort: 6379
+          # TCP вместо exec redis-cli: каждая exec-проба — новый процесс через containerd,
+          # на одном узле это заметная доля CPU kubelet.
           readinessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
-            periodSeconds: 5
-          livenessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
+            tcpSocket:
+              port: redis
             periodSeconds: 10
-            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: 30
+            failureThreshold: 3
           resources:
             requests:
               cpu: 50m

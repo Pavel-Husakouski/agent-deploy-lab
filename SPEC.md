@@ -1,7 +1,7 @@
 # agent-deploy-lab: спецификация (черновик)
 
-> **Статус:** утверждён к этапу 1, 2026-10-28; этап 5 готов 2026-11-02. Открытые вопросы
-> в конце файла закрыть к их этапам.
+> **Статус:** утверждён к этапу 1, 2026-10-28; этап 5 готов 2026-11-02; этап 10 (вне очереди,
+> до этапа 6) готов 2026-11-16. Открытые вопросы в конце файла закрыть к их этапам.
 
 ## Контекст для сессии
 
@@ -43,7 +43,8 @@
 |------------|----------------------------------------------------------------------------------|
 | API        | Fastify: `POST /chat`, `GET /healthz`, `GET /metrics` (Prometheus)               |
 | CLI-клиент | REPL на `readline`, streaming; после разбора текст — уточнение, Enter — дальше   |
-| LLM        | DeepSeek через пакет `openai` с `baseURL: https://api.deepseek.com`              |
+| LLM        | пакет `openai`: в compose DeepSeek напрямую, в кластере через LiteLLM Proxy      |
+| Трейсы     | Langfuse: trace на запрос, сессии, теги релиза, score разбора                    |
 | State      | Redis: история диалога по `sessionId`, в записи есть `schemaVersion`             |
 | Промпты    | `prompts/*.md`, выбор версии через feature flag или `release.json`               |
 | Manifest   | `release.json`: версия, модель, параметры, версия и sha256 промпта, eval dataset |
@@ -68,6 +69,12 @@
 Почему не Docker Compose: canary и автооткат там пришлось бы писать скриптами. Argo Rollouts
 и Argo CD дают те же механизмы, что в проде, и на интервью это весомее.
 
+С этапа 11 кластер kind, Argo CD, Argo Rollouts, Prometheus, LiteLLM и Langfuse живут в
+отдельном репо [llm-platform](https://github.com/Pavel-Husakouski/llm-platform) и общие для
+нескольких проектов. agent-deploy-lab — тенант платформы: `make tenant` выдаёт ему virtual
+key LiteLLM и проект Langfuse, в своём `deploy/` остаются только agent и Redis. План переноса —
+[INFRA.md](INFRA.md).
+
 ## Архитектура
 
 ```text
@@ -75,16 +82,22 @@ PR ──> GitHub Actions: typecheck, vitest, manifest check, promptfoo (golden,
    ──> merge в main ──> build образа ──> push в GHCR (тег = версия + sha)
                     ──> коммит нового тега в deploy/ (k8s-манифесты)
 
-bootstrap (make up):
-  kind create cluster ──> helm install argo-cd ──> kubectl apply root-app.yaml
-  root-app (app-of-apps) ──> Applications: Argo Rollouts, Prometheus, Redis, agent
+llm-platform (make -C ../llm-platform up, отдельный репо):
+  kind create cluster ──> helm install argo-cd ──> root-app llm-platform
+  ──> Applications: Argo Rollouts, Prometheus, LiteLLM, ClickHouse, Langfuse
 
-локальный kind:
+bootstrap агента (make up):
+  проверка платформы ──> make tenant (virtual key, проект Langfuse, Secret platform-llm)
+  ──> kubectl apply root-app.yaml (agent-deploy-lab) ──> Applications: Redis, agent
+
+локальный kind (кластер llm-platform):
   Argo CD ──(pull)──> GitHub repo: видит новый тег в deploy/
           ──> Argo Rollouts: canary 10% → 50% → 100%
                  └── AnalysisTemplate: Prometheus (error rate, p95 latency, cost)
                  └── анализ не прошёл ──> автооткат на stable
   Redis: история диалогов, Prometheus: метрики
+  agent ──> LiteLLM Proxy (virtual key, бюджет) ──> DeepSeek
+                └── трейсы ──> Langfuse <── score разбора ── agent
 ```
 
 Все соединения исходящие со стороны кластера: self-hosted runner, белый IP и туннели не нужны.
@@ -99,29 +112,33 @@ bootstrap (make up):
 | Eval, red team      | promptfoo, provider `deepseek:deepseek-flash`, grader на DeepSeek  |
 | Образы              | Docker, GHCR                                                       |
 | CI                  | GitHub Actions                                                     |
-| Кластер             | kind                                                               |
-| Bootstrap           | Makefile: `kind create`, `helm install argo-cd`, root-app          |
+| Кластер             | kind, общий кластер llm-platform                                   |
+| Bootstrap           | Makefile: проверка платформы, `make tenant`, root-app              |
 | IaC                 | Argo CD app-of-apps (`deploy/bootstrap/root-app.yaml`)             |
 | CD (GitOps)         | Argo CD                                                            |
 | Выкатка             | Argo Rollouts                                                      |
 | Метрики             | Prometheus (kube-prometheus-stack или минимальный chart)           |
 | Feature flags       | flagd (OpenFeature SDK), процентный rollout версии промпта         |
 | State               | Redis                                                              |
+| LLM gateway         | LiteLLM Proxy: alias модели, virtual key с бюджетом, ретраи        |
+| Трейсы LLM          | Langfuse self-hosted, chart `langfuse`, свой ClickHouse            |
 | Облачный IaC (опц.) | Terraform, этап 9                                                  |
 
 ## Этапы
 
-| # | Что делаем                                                           | Подпункт темы      |
-|---|----------------------------------------------------------------------|--------------------|
-| 1 | API + CLI + DeepSeek + Redis, локально через `docker compose`        | база               |
-| 2 | Промпты в файлах, `release.json` с sha256, Dockerfile, `/metrics`    | 1. версионирование |
-| 3 | GitHub Actions: typecheck, vitest, manifest check, promptfoo         | 2. release checks  |
-| 4 | Makefile + Argo CD app-of-apps: Rollouts, Prometheus, Redis из git   | 5. IaC             |
-| 5 | GitOps: CI коммитит тег в `deploy/`, Argo CD синхронизирует          | CD                 |
-| 6 | Canary с AnalysisTemplate, feature flag на версию промпта            | 3. выкатка         |
-| 7 | Сценарии отката: «сломанный» релиз; v2 пишет историю в новом формате | 4. rollback        |
-| 8 | PR template, CODEOWNERS на `prompts/`, отчёт promptfoo в PR, runbook | 6. review и docs   |
-| 9 | (опц.) Terraform в облаке: managed LLM endpoint + budget alert       | 5. IaC             |
+| #  | Что делаем                                                           | Подпункт темы      |
+|----|----------------------------------------------------------------------|--------------------|
+| 1  | API + CLI + DeepSeek + Redis, локально через `docker compose`        | база               |
+| 2  | Промпты в файлах, `release.json` с sha256, Dockerfile, `/metrics`    | 1. версионирование |
+| 3  | GitHub Actions: typecheck, vitest, manifest check, promptfoo         | 2. release checks  |
+| 4  | Makefile + Argo CD app-of-apps: Rollouts, Prometheus, Redis из git   | 5. IaC             |
+| 5  | GitOps: CI коммитит тег в `deploy/`, Argo CD синхронизирует          | CD                 |
+| 6  | Canary с AnalysisTemplate, feature flag на версию промпта            | 3. выкатка         |
+| 7  | Сценарии отката: «сломанный» релиз; v2 пишет историю в новом формате | 4. rollback        |
+| 8  | PR template, CODEOWNERS на `prompts/`, отчёт promptfoo в PR, runbook | 6. review и docs   |
+| 9  | (опц.) Terraform в облаке: managed LLM endpoint + budget alert       | 5. IaC             |
+| 10 | LiteLLM Proxy и self-hosted Langfuse (сделан до этапа 6)             | наблюдаемость      |
+| 11 | Инфраструктура в llm-platform, агент — тенант (INFRA.md)             | IaC                |
 
 **Критерии готовности:**
 
@@ -136,6 +153,11 @@ bootstrap (make up):
 8. Runbook отката проходится по шагам без подсказок.
 9. (опц.) `terraform plan` показывает diff, `apply`/`destroy` управляют endpoint и budget
    alert, state не в git.
+10. `make up` поднимает LiteLLM и Langfuse; в поде агента нет ключа DeepSeek; в Langfuse на
+    каждый запрос trace с токенами, стоимостью, тегами релиза и сессией, у разбора score;
+    урезанный бюджет virtual key даёт понятную ошибку; метрики агента не изменились.
+11. `make up` агента поверх поднятой платформы: trace и score в проекте Langfuse агента, spend
+    на его ключе; `make down` агента оставляет платформу живой.
 
 ## Что нужно от GitHub
 
@@ -162,8 +184,12 @@ bootstrap (make up):
 
 ## Секреты
 
-- `DEEPSEEK_API_KEY` хранится только в GitHub Secrets (для CI) и в k8s Secret в локальном
-  кластере (создаётся вручную или `make up` из переменной окружения пользователя, не в git).
+- `DEEPSEEK_API_KEY` хранится только в GitHub Secrets (для CI) и в k8s Secret платформы
+  (`make up` llm-platform из переменной окружения пользователя, не в git). В кластере он лежит
+  только в namespace `llm` у LiteLLM.
+- Секреты LiteLLM и Langfuse генерирует платформа, см. llm-platform. У агента один Secret
+  `platform-llm` (virtual key, адреса и ключи проекта Langfuse `agent`), его создаёт
+  `make tenant` платформы, в git его нет.
 - В репозитории нет ключей, `.env` в `.gitignore`, `terraform.tfstate` в `.gitignore`
   (для этапа 9).
 - `DEPLOY_KEY` (write deploy key) лежит только в окружении `release`, PR-ветки его не получают.
@@ -184,12 +210,15 @@ bootstrap (make up):
 | Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
-| Prometheus    | chart `prometheus` (только server, без PVC), не kube-prometheus-stack   |
+| Платформа     | кластер, Argo CD, Argo Rollouts, Prometheus, LiteLLM, Langfuse — в      |
+|               | llm-platform, агент — тенант (`make tenant`, Secret `platform-llm`);    |
+|               | решения по ним описаны там                                              |
 | Redis в k8s   | свои манифесты (StatefulSet, AOF на PVC), без Bitnami chart             |
 | Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
 | Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
 | agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
-| Доступ        | kind `extraPortMappings`: API 13000, Argo CD 18080, Prometheus 19090    |
+| Доступ        | API 13000 → NodePort 30000 из резерва 13000–13009 платформы,            |
+|               | остальные порты (Argo CD, Langfuse, LiteLLM...) — у платформы           |
 | Роль          | свободный текст от клиента, формат и eval injection, не хранится в API  |
 | Режим хода    | `mode` в запросе, подставляет API, текст пользователя на него не влияет |
 | Контекст      | сессия = вопрос и обсуждение, разбор между сессиями не передаётся       |
@@ -198,7 +227,10 @@ bootstrap (make up):
 | Разбор        | JSON mode, схема в API, один повтор; клиенту `event: review`, в историю |
 |               | markdown; остальные режимы — текст потоком                              |
 | Краткость     | уточнения: правило в промпте и eval, `maxTokens` обрывал бы ответ       |
-| Ключ в k8s    | `make secret` из `DEEPSEEK_API_KEY` окружения, `.env` не читается       |
+| Трейсы        | LiteLLM пишет trace в проект Langfuse агента по metadata virtual key    |
+|               | (`logging` с `langfuse_otel`), см. INFRA.md, шаг 0                      |
+| Score         | агент шлёт `review_score` в public API Langfuse, trace id задаёт сам и  |
+|               | передаёт LiteLLM в `traceparent`: `trace_id` из metadata не работает    |
 
 ## Открытые вопросы
 

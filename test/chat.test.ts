@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/api/server.js';
 import type { HistoryRecord, HistoryStore } from '../src/history.js';
 import { makeRecord } from '../src/history.js';
+import type { Score, ScoreSink } from '../src/langfuse.js';
 import type {
   ChatMessage,
   FinishReason,
@@ -247,7 +248,7 @@ describe('POST /chat, разбор в режиме answer', () => {
 
     const { events, store } = await answer(llm);
 
-    expect(llm.options).toEqual([{ json: true }]);
+    expect(llm.options).toMatchObject([{ json: true }]);
     expect(events).toEqual([
       { event: 'review', data: REVIEW },
       { event: 'done', data: {} },
@@ -261,7 +262,7 @@ describe('POST /chat, разбор в режиме answer', () => {
 
     await app.inject({ method: 'POST', url: '/chat', payload: CLARIFY });
 
-    expect(llm.options).toEqual([{ json: false }]);
+    expect(llm.options).toMatchObject([{ json: false }]);
   });
 
   it('ответ не по схеме: повтор, затем event: error без записи в историю', async () => {
@@ -287,6 +288,94 @@ describe('POST /chat, разбор в режиме answer', () => {
     expect((await store.read('s1')).at(-1)?.content).toBe('вернёмся к вопросу');
     const body = (await app!.inject({ method: 'GET', url: '/metrics' })).body;
     expect(body).toMatch(/agent_review_score_count\{[^}]*\} 0/);
+  });
+});
+
+class MemoryScores implements ScoreSink {
+  scores: Score[] = [];
+  fails = false;
+  async record(score: Score): Promise<void> {
+    if (this.fails) throw new Error('Langfuse недоступен');
+    this.scores.push(score);
+  }
+}
+
+describe('POST /chat, trace и score для Langfuse', () => {
+  it('все вызовы запроса идут с одним trace: сессия, теги релиза и режима', async () => {
+    // Первый ответ не по схеме: повтор разбора должен попасть в тот же trace.
+    const llm = new FakeLlm(['  ']);
+    app = buildApp({ llm, store: await storeWithQuestion(), release: RELEASE });
+
+    await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+
+    const [first, second] = llm.options.map((o) => o?.trace);
+    expect(first).toEqual({
+      traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
+      sessionId: 's1',
+      name: 'chat-answer',
+      tags: ['release:1.2.0', 'prompt:trainer-test', 'model:test-model', 'mode:answer'],
+      release: '1.2.0',
+    });
+    expect(second).toEqual(first);
+  });
+
+  it('у разных запросов разные trace, clientId идёт как user', async () => {
+    const llm = new FakeLlm(['Вопрос']);
+    app = buildApp({ llm, store: new MemoryStore(), release: RELEASE });
+    const question = (sessionId: string) => ({
+      method: 'POST' as const,
+      url: '/chat',
+      payload: { sessionId, role: ROLE, mode: 'question', clientId: 'c1' },
+    });
+
+    await app.inject(question('s1'));
+    await app.inject(question('s2'));
+
+    const [a, b] = llm.options.map((o) => o?.trace);
+    expect(a?.userId).toBe('c1');
+    expect(a?.traceId).not.toBe(b?.traceId);
+  });
+
+  it('оценка разбора уходит score на trace запроса', async () => {
+    const llm = new FakeLlm(REVIEW_CHUNKS);
+    const scores = new MemoryScores();
+    app = buildApp({ llm, store: await storeWithQuestion(), release: RELEASE, scores });
+
+    await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+
+    expect(scores.scores).toEqual([
+      { traceId: llm.options[0]?.trace?.traceId, name: 'review_score', value: 7 },
+    ]);
+  });
+
+  it('redirect без оценки score не отправляет', async () => {
+    const redirect = { kind: 'redirect', text: 'вернёмся к вопросу' };
+    const scores = new MemoryScores();
+    app = buildApp({
+      llm: new FakeLlm([JSON.stringify(redirect)]),
+      store: await storeWithQuestion(),
+      release: RELEASE,
+      scores,
+    });
+
+    await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+
+    expect(scores.scores).toEqual([]);
+  });
+
+  it('сбой Langfuse не ломает ответ', async () => {
+    const scores = new MemoryScores();
+    scores.fails = true;
+    app = buildApp({
+      llm: new FakeLlm(REVIEW_CHUNKS),
+      store: await storeWithQuestion(),
+      release: RELEASE,
+      scores,
+    });
+
+    const res = await app.inject({ method: 'POST', url: '/chat', payload: ANSWER });
+
+    expect(parseSse(res.body).map((e) => e.event)).toEqual(['review', 'done']);
   });
 });
 
