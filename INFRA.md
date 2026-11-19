@@ -4,7 +4,7 @@
 `llm-platform` с долгоживущим kind-кластером. `agent-deploy-lab` становится одним из его
 тенантов, и так же могут подключаться другие проекты.
 
-Статус: план, не выполнен.
+Статус: шаг 0 выполнен (см. [Результаты шага 0](#результаты-шага-0)), шаги 1–3 впереди.
 
 ## Что влияет на план
 
@@ -104,11 +104,80 @@ agent-deploy-lab (этот репо, тенант)
    - `make down` агента оставляет платформу живой.
 5. Прогнать `npm test` и CI на PR.
 
+## Результаты шага 0
+
+Проверено 2026-11-19 в кластере `agent-deploy-lab`: LiteLLM v1.108.9, Langfuse 4.77.0
+(chart 2.2.4). После проверки кластер возвращён в исходное состояние.
+
+### Маршрутизация трейсов LiteLLM по virtual key: работает
+
+Если у virtual key в metadata задан `logging` с колбэком `langfuse_otel`, trace уходит в
+проект Langfuse тенанта, а в глобальный проект (env `LANGFUSE_*` у LiteLLM) не дублируется.
+Score, который тенант отправляет своими ключами через `POST /api/public/scores` на этот
+trace, принимается (200). Схема агента (trace пишет LiteLLM, score пишет агент) работает для
+любого тенанта.
+
+```json
+{
+  "key_alias": "<tenant>",
+  "models": ["deepseek-flash"],
+  "max_budget": 1,
+  "budget_duration": "30d",
+  "metadata": {
+    "logging": [{
+      "callback_name": "langfuse_otel",
+      "callback_type": "success_and_failure",
+      "callback_vars": {
+        "langfuse_public_key": "pk-lf-…",
+        "langfuse_secret_key": "sk-lf-…",
+        "langfuse_host": "http://langfuse-web.langfuse:3000"
+      }
+    }]
+  }
+}
+```
+
+Глобальный колбэк и env `LANGFUSE_*` у LiteLLM остаются: туда попадают вызовы ключей без
+`logging`, например ключа master. Для них headless init создаёт проект `platform`.
+
+### Проекты Langfuse программно: только через внутренний tRPC
+
+- Org API keys и `POST /api/public/projects` закрыты в OSS-версии:
+  `POST /api/admin/organizations/{id}/apiKeys` с `ADMIN_API_KEY` отвечает
+  `403 This feature is not available on your current plan`, а tRPC
+  `organizationApiKeys.create` требует entitlement `admin-api`.
+- Работает путь, которым пользуется UI. Вход пользователем init (`GET /api/auth/csrf`, затем
+  `POST /api/auth/callback/credentials` с email, password и csrfToken), потом с cookie сессии
+  POST в `/api/trpc/<procedure>` с телом `{"json": {...}}`:
+  - `projects.create` `{name, orgId}` возвращает `id`;
+  - `projectApiKeys.create` `{projectId, note}` возвращает `publicKey` и `secretKey`;
+  - `projects.delete` `{projectId}` удаляет проект.
+- `ADMIN_API_KEY` не нужен.
+- tRPC — внутренний API UI, он может поменяться между версиями. Версия chart Langfuse
+  зафиксирована, `tenant.sh` проверяет ответы и падает с понятной ошибкой. После обновления
+  Langfuse нужно прогнать `make tenant` на тестовом тенанте.
+
+### Что это меняет в шагах 1–2
+
+- Решение «отдельный проект Langfuse на тенанта» подтверждено, запасной путь с тегом не
+  нужен.
+- `tenant.sh` работает с хоста через NodePort: LiteLLM на `localhost:14000` (master key),
+  Langfuse на `localhost:13300` (пользователь init). PostSync Job и `kubectl exec` не нужны.
+- Идемпотентность. Ключи тенанта хранятся в Secret платформы `tenant-<name>` (namespace
+  `llm`). Если Secret есть, проект и ключи не создаются заново, только копируется
+  `platform-llm` в namespace тенанта. Так же, как `once` в нынешнем `k8s-secrets.sh`.
+- Headless init платформы: org `llm-platform`, проект `platform` для вызовов без тенанта.
+  Проекты тенантов создаёт `tenant.sh`.
+
+### Замечание для будущих проверок
+
+`kubectl set env` на ресурсе под Argo CD не считается drift: Application остаётся Synced,
+и selfHeal такое поле не убирает. Временные правки нужно откатывать вручную.
+
 ## Решения по умолчанию
 
 - Имя репо `llm-platform`, публичный.
-- Отдельный проект Langfuse на каждого тенанта. Если шаг 0 не пройдёт, общий проект с
-  тегом `project:<name>`.
+- Отдельный проект Langfuse на каждого тенанта: подтверждено шагом 0.
 - Данные старого кластера не мигрируются.
 - Отдельный AppProject Argo CD для каждого тенанта (ограничение его namespace) пока не
   делается, это можно добавить позже.
