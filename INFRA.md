@@ -4,7 +4,8 @@
 `llm-platform` с долгоживущим kind-кластером. `agent-deploy-lab` становится одним из его
 тенантов, и так же могут подключаться другие проекты.
 
-Статус: шаги 0–2 выполнены (см. [Результаты шага 0](#результаты-шага-0)), шаг 3 впереди.
+Статус: шаги 0–3 выполнены (см. [Результаты шага 0](#результаты-шага-0) и
+[Результаты шага 3](#результаты-шага-3)).
 
 ## Что влияет на план
 
@@ -173,6 +174,37 @@ trace, принимается (200). Схема агента (trace пишет L
 
 `kubectl set env` на ресурсе под Argo CD не считается drift: Application остаётся Synced,
 и selfHeal такое поле не убирает. Временные правки нужно откатывать вручную.
+
+## Результаты шага 3
+
+Проверено 2026-11-19: кластер `llm-platform` с нуля, агент из ветки `stage-11`.
+
+- `make up` платформы: все 6 Application Synced/Healthy. `make up REVISION=stage-11` агента:
+  `make tenant` создал virtual key `agent`, проект Langfuse `agent` и Secret `platform-llm`
+  (`LLM_BASE_URL=http://litellm.llm:4000`, `LANGFUSE_HOST=http://langfuse-web.langfuse:3000`).
+- Вопрос и ответ через API агента: trace `chat-question` и `chat-answer` пишутся в проект
+  `agent`, trace id совпадает с логом агента. Score `review_score` агент отправил своими ключами
+  на этот trace, Langfuse его принял (warn о сбое нет, метрика `agent_review_score_count` = 1).
+- Spend растёт на ключе `agent` (`/key/info` с ключом тенанта).
+- `make llm-budget KEY=agent BUDGET=0`: вызов модели ключом агента даёт
+  `422 budget_exceeded`. После `BUDGET=1` снова 200.
+- Повторный `make tenant`: «ключи не пересоздаются», Secret `tenant-agent` не меняется.
+- `make down` агента удаляет Application и namespace `agent`, платформа остаётся Synced/Healthy.
+  Следующий `make up` берёт тот же ключ, spend продолжается.
+
+Что выяснилось по ходу:
+
+- Langfuse 4 работает в режиме `events_only`: `GET /api/public/traces` и `GET /api/public/scores`
+  отвечают, что endpoint недоступен. Читать trace можно через `GET /api/public/v2/observations`,
+  score видно только в UI. `POST /api/public/scores` работает.
+- Образ агента в kind не собирается: Argo CD берёт его из GHCR по тегу в
+  `deploy/agent/kustomization.yaml`. Пока ветка не влита и CI не выпустил новый образ, для
+  проверки нового кода образ собирают локально и грузят в узел:
+  `docker build -t agent-deploy-lab:<tag> . && kind load docker-image agent-deploy-lab:<tag>
+  --name llm-platform`, а тег временно меняют в kustomization. Временный коммит этапа 10 с
+  локальным образом откачен перед merge.
+- `PLATFORM_DIR ?= ../llm-platform` рассчитан на checkout в `~/@/agent-deploy-lab`. Из
+  git worktree путь нужно передавать явно: `make up PLATFORM_DIR=~/@/llm-platform`.
 
 ## Решения по умолчанию
 
