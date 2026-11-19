@@ -69,6 +69,12 @@
 Почему не Docker Compose: canary и автооткат там пришлось бы писать скриптами. Argo Rollouts
 и Argo CD дают те же механизмы, что в проде, и на интервью это весомее.
 
+С этапа 11 кластер kind, Argo CD, Argo Rollouts, Prometheus, LiteLLM и Langfuse живут в
+отдельном репо [llm-platform](https://github.com/Pavel-Husakouski/llm-platform) и общие для
+нескольких проектов. agent-deploy-lab — тенант платформы: `make tenant` выдаёт ему virtual
+key LiteLLM и проект Langfuse, в своём `deploy/` остаются только agent и Redis. План переноса —
+[INFRA.md](INFRA.md).
+
 ## Архитектура
 
 ```text
@@ -76,12 +82,15 @@ PR ──> GitHub Actions: typecheck, vitest, manifest check, promptfoo (golden,
    ──> merge в main ──> build образа ──> push в GHCR (тег = версия + sha)
                     ──> коммит нового тега в deploy/ (k8s-манифесты)
 
-bootstrap (make up):
-  kind create cluster ──> helm install argo-cd ──> kubectl apply root-app.yaml
-  root-app (app-of-apps) ──> Applications: Argo Rollouts, Prometheus, Redis, agent,
-                             LiteLLM, ClickHouse, Langfuse
+llm-platform (make -C ../llm-platform up, отдельный репо):
+  kind create cluster ──> helm install argo-cd ──> root-app llm-platform
+  ──> Applications: Argo Rollouts, Prometheus, LiteLLM, ClickHouse, Langfuse
 
-локальный kind:
+bootstrap агента (make up):
+  проверка платформы ──> make tenant (virtual key, проект Langfuse, Secret platform-llm)
+  ──> kubectl apply root-app.yaml (agent-deploy-lab) ──> Applications: Redis, agent
+
+локальный kind (кластер llm-platform):
   Argo CD ──(pull)──> GitHub repo: видит новый тег в deploy/
           ──> Argo Rollouts: canary 10% → 50% → 100%
                  └── AnalysisTemplate: Prometheus (error rate, p95 latency, cost)
@@ -103,8 +112,8 @@ bootstrap (make up):
 | Eval, red team      | promptfoo, provider `deepseek:deepseek-flash`, grader на DeepSeek  |
 | Образы              | Docker, GHCR                                                       |
 | CI                  | GitHub Actions                                                     |
-| Кластер             | kind                                                               |
-| Bootstrap           | Makefile: `kind create`, `helm install argo-cd`, root-app          |
+| Кластер             | kind, общий кластер llm-platform                                   |
+| Bootstrap           | Makefile: проверка платформы, `make tenant`, root-app              |
 | IaC                 | Argo CD app-of-apps (`deploy/bootstrap/root-app.yaml`)             |
 | CD (GitOps)         | Argo CD                                                            |
 | Выкатка             | Argo Rollouts                                                      |
@@ -129,6 +138,7 @@ bootstrap (make up):
 | 8  | PR template, CODEOWNERS на `prompts/`, отчёт promptfoo в PR, runbook | 6. review и docs   |
 | 9  | (опц.) Terraform в облаке: managed LLM endpoint + budget alert       | 5. IaC             |
 | 10 | LiteLLM Proxy и self-hosted Langfuse (сделан до этапа 6)             | наблюдаемость      |
+| 11 | Инфраструктура в llm-platform, агент — тенант (INFRA.md)             | IaC                |
 
 **Критерии готовности:**
 
@@ -146,6 +156,8 @@ bootstrap (make up):
 10. `make up` поднимает LiteLLM и Langfuse; в поде агента нет ключа DeepSeek; в Langfuse на
     каждый запрос trace с токенами, стоимостью, тегами релиза и сессией, у разбора score;
     урезанный бюджет virtual key даёт понятную ошибку; метрики агента не изменились.
+11. `make up` агента поверх поднятой платформы: trace и score в проекте Langfuse агента, spend
+    на его ключе; `make down` агента оставляет платформу живой.
 
 ## Что нужно от GitHub
 
@@ -172,11 +184,12 @@ bootstrap (make up):
 
 ## Секреты
 
-- `DEEPSEEK_API_KEY` хранится только в GitHub Secrets (для CI) и в k8s Secret в локальном
-  кластере (создаётся вручную или `make up` из переменной окружения пользователя, не в git).
-  В кластере он лежит только в namespace `llm` у LiteLLM, у агента virtual key.
-- Секреты LiteLLM и Langfuse (master key, ключи шифрования, пароли БД, API-ключи) генерирует
-  `make secret` один раз, в git их нет.
+- `DEEPSEEK_API_KEY` хранится только в GitHub Secrets (для CI) и в k8s Secret платформы
+  (`make up` llm-platform из переменной окружения пользователя, не в git). В кластере он лежит
+  только в namespace `llm` у LiteLLM.
+- Секреты LiteLLM и Langfuse генерирует платформа, см. llm-platform. У агента один Secret
+  `platform-llm` (virtual key, адреса и ключи проекта Langfuse `agent`), его создаёт
+  `make tenant` платформы, в git его нет.
 - В репозитории нет ключей, `.env` в `.gitignore`, `terraform.tfstate` в `.gitignore`
   (для этапа 9).
 - `DEPLOY_KEY` (write deploy key) лежит только в окружении `release`, PR-ветки его не получают.
@@ -197,15 +210,15 @@ bootstrap (make up):
 | Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
-| Prometheus    | chart `prometheus` (только server, без PVC), не kube-prometheus-stack   |
-|               | без jobs `kubernetes-api-servers` и `kubernetes-nodes`: главная         |
-|               | фоновая нагрузка на apiserver, CPU подов есть в cAdvisor                |
+| Платформа     | кластер, Argo CD, Argo Rollouts, Prometheus, LiteLLM, Langfuse — в      |
+|               | llm-platform, агент — тенант (`make tenant`, Secret `platform-llm`);    |
+|               | решения по ним описаны там                                              |
 | Redis в k8s   | свои манифесты (StatefulSet, AOF на PVC), без Bitnami chart             |
 | Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
 | Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
 | agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
-| Доступ        | kind `extraPortMappings`: API 13000, Argo CD 18080, Prometheus 19090,   |
-|               | Langfuse 13300, LiteLLM 14000, ClickHouse 18123 и 19000                 |
+| Доступ        | API 13000 → NodePort 30000 из резерва 13000–13009 платформы,            |
+|               | остальные порты (Argo CD, Langfuse, LiteLLM...) — у платформы           |
 | Роль          | свободный текст от клиента, формат и eval injection, не хранится в API  |
 | Режим хода    | `mode` в запросе, подставляет API, текст пользователя на него не влияет |
 | Контекст      | сессия = вопрос и обсуждение, разбор между сессиями не передаётся       |
@@ -214,14 +227,8 @@ bootstrap (make up):
 | Разбор        | JSON mode, схема в API, один повтор; клиенту `event: review`, в историю |
 |               | markdown; остальные режимы — текст потоком                              |
 | Краткость     | уточнения: правило в промпте и eval, `maxTokens` обрывал бы ответ       |
-| Ключ в k8s    | `make secret` из `DEEPSEEK_API_KEY` окружения, `.env` не читается       |
-| LLM gateway   | LiteLLM Proxy `v1.108.9` (LTS), свои манифесты, Postgres для ключей     |
-| Трейсы        | callback `langfuse_otel`: Langfuse v4 принимает трейсы по OTel          |
-| ClickHouse    | свой StatefulSet на один узел: chart тянет operator, Keeper и           |
-|               | cert-manager; `system.*_log` и профайлер выключены, кроме `query_log`   |
-|               | с TTL 1 день; 2 потока асинхронных вставок вместо 16: в простое они     |
-|               | просыпаются 100 раз в секунду                                           |
-| Секреты LLM   | `make secret`, не chart Langfuse: под Argo CD нет `lookup`              |
+| Трейсы        | LiteLLM пишет trace в проект Langfuse агента по metadata virtual key    |
+|               | (`logging` с `langfuse_otel`), см. INFRA.md, шаг 0                      |
 | Score         | агент шлёт `review_score` в public API Langfuse, trace id задаёт сам и  |
 |               | передаёт LiteLLM в `traceparent`: `trace_id` из metadata не работает    |
 

@@ -5,13 +5,15 @@ canary, rollback, IaC, code review. Подробности и план этап�
 
 Сейчас готов **этап 5**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
 Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально
-через `docker compose` или в kind-кластере, который Argo CD собирает из git
-(см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
+через `docker compose` или тенантом в kind-кластере
+[llm-platform](https://github.com/Pavel-Husakouski/llm-platform), куда Argo CD доставляет его
+из git (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
 коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
 
 Готов и **этап 10**: в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и
 бюджетом, а каждый вызов виден трейсом в self-hosted Langfuse
-(см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
+(см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)). Шлюз, Langfuse и кластер вынесены в
+общую платформу llm-platform, агент получает от неё ключи через `make tenant`.
 
 Приложение — тренер к интервью на роль, которую выбирает клиент: задаёт вопрос, поясняет его
 по запросу, оценивает ответ по шкале 0–10, даёт эталонный ответ и обсуждает его, пока не нажат
@@ -60,77 +62,57 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 
 ## Кластер
 
-Тот же агент в kind. Руками ставится только Argo CD, остальное он синхронизирует из
-`deploy/` в git по схеме app-of-apps.
+Тот же агент в Kubernetes, тенантом [llm-platform](https://github.com/Pavel-Husakouski/llm-platform):
+kind-кластер `llm-platform`, Argo CD, LiteLLM, Langfuse, Prometheus и Argo Rollouts живут
+там и общие для всех проектов. Этот репо кладёт в общий Argo CD свой root-app
+`agent-deploy-lab` (app-of-apps), остальное Argo CD синхронизирует из `deploy/` в git.
 
-Нужны `docker`, `kind`, `kubectl`, `helm`, `make`, `openssl` и около 5 GB RAM. Порты 13000, 13300,
-14000, 18080, 18123, 19000 и 19090 на `127.0.0.1` должны быть свободны, поэтому сначала
+Нужны `docker`, `kind`, `kubectl`, `make` и поднятая платформа (её требования — в README
+llm-platform). Порт 13000 на `127.0.0.1` пробрасывает кластер платформы, поэтому сначала
 `docker compose down`.
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...   # make читает ключ только из окружения, .env не читает
-make up                          # кластер, секреты, Argo CD, root-app, ожидание
+git clone https://github.com/Pavel-Husakouski/llm-platform.git ../llm-platform
+export DEEPSEEK_API_KEY=sk-...   # нужен только платформе, make читает его из окружения
+make -C ../llm-platform up       # кластер, Argo CD, LiteLLM, Langfuse, Prometheus
+make up                          # ключи тенанта, root-app агента, ожидание
 npm run cli                      # тот же CLI, API на localhost:13000
-make down                        # удалить кластер целиком
+make down                        # удалить агента, платформа остаётся
 ```
 
-| Target                     | Действие                                                      |
-|----------------------------|---------------------------------------------------------------|
-| `make up`                  | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки |
-|                            | `deploy/` из ветки до merge (по умолчанию `main`)             |
-| `make down`                | `kind delete cluster`                                         |
-| `make secret`              | Secret `deepseek` в `llm` из `DEEPSEEK_API_KEY`, остальные    |
-|                            | секреты генерирует один раз, см. ниже                         |
-| `make status`              | состояние Applications и подов, адреса UI                     |
-| `make argocd-password`     | пароль `admin` для Argo CD UI                                 |
-| `make langfuse-password`   | пароль `admin@agent-deploy-lab.local` для Langfuse UI         |
-| `make litellm-password`    | master key LiteLLM, он же пароль `admin` в UI                 |
-| `make clickhouse-password` | пароль пользователя `clickhouse` в ClickHouse Langfuse        |
-| `make llm-budget`          | бюджет virtual key агента: `BUDGET=0`, вернуть `BUDGET=1`     |
+| Target        | Действие                                                             |
+|---------------|----------------------------------------------------------------------|
+| `make up`     | всё по порядку, идемпотентно; `REVISION=<ветка>` для проверки        |
+|               | `deploy/` из ветки до merge (по умолчанию `main`)                    |
+| `make down`   | удалить root-app (с ним agent и redis) и namespace `agent`           |
+| `make tenant` | `make tenant` платформы: virtual key, проект Langfuse, `platform-llm` |
+| `make status` | состояние Application и подов агента                                 |
 
-| Адрес                    | Что                                               |
-|--------------------------|---------------------------------------------------|
-| `http://localhost:13000` | API агента (NodePort 30000)                       |
-| `http://localhost:18080` | Argo CD UI, логин `admin`                         |
-| `http://localhost:19090` | Prometheus, например `agent_release_info`         |
-| `http://localhost:13300` | Langfuse UI, логин `admin@agent-deploy-lab.local` |
-| `http://localhost:14000` | LiteLLM, UI на `/ui`, логин `admin`               |
-| `http://localhost:18123` | ClickHouse Langfuse, SQL на `/play`, `clickhouse` |
-| `localhost:19000`        | ClickHouse, native-протокол для clickhouse-client |
+Каталог платформы задаёт `PLATFORM_DIR` (по умолчанию `../llm-platform`), kubectl работает с
+контекстом `kind-llm-platform`. `make up` падает сразу, если кластера нет или Application
+`llm-platform` не Synced/Healthy.
+
+| Адрес                    | Что                         |
+|--------------------------|-----------------------------|
+| `http://localhost:13000` | API агента (NodePort 30000) |
+
+Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах платформы:
+`make -C ../llm-platform status`, пароли там же (`make -C ../llm-platform argocd-password` и
+другие `*-password`).
 
 Что синхронизирует Argo CD (`deploy/apps`, Helm chart с Application на компонент):
 
-| Wave | Application     | Источник                                           | Namespace       |
-|------|-----------------|----------------------------------------------------|-----------------|
-| -1   | `argo-rollouts` | chart `argo-rollouts` 2.43.8                       | `argo-rollouts` |
-| -1   | `prometheus`    | chart `prometheus` 29.40.0, только server          | `monitoring`    |
-| -1   | `clickhouse`    | [deploy/langfuse](deploy/langfuse): один узел      | `langfuse`      |
-| 0    | `redis`         | [deploy/redis](deploy/redis): StatefulSet, AOF+PVC | `agent`         |
-| 0    | `litellm`       | [deploy/litellm](deploy/litellm): proxy, Postgres  | `llm`           |
-| 0    | `langfuse`      | chart `langfuse` 2.2.4: web, worker, Postgres,     | `langfuse`      |
-|      |                 | Valkey, SeaweedFS                                  |                 |
-| 1    | `agent`         | [deploy/agent](deploy/agent): Rollout, NodePort    | `agent`         |
+| Wave | Application | Источник                                           | Namespace |
+|------|-------------|----------------------------------------------------|-----------|
+| 0    | `redis`     | [deploy/redis](deploy/redis): StatefulSet, AOF+PVC | `agent`   |
+| 1    | `agent`     | [deploy/agent](deploy/agent): Rollout, NodePort    | `agent`   |
 
 - У всех Application включены `automated`, `prune` и `selfHeal`: ручная правка в кластере
   откатывается к состоянию из git.
-- Sync waves работают благодаря health check для `Application` в
-  [argocd-values.yaml](deploy/bootstrap/argocd-values.yaml). Без него agent синхронизировался
-  бы раньше, чем появятся CRD `Rollout`.
-- agent уже `Rollout`, пока без canary steps (они появятся на этапе 6). Под scrape-ится
-  Prometheus по аннотациям `prometheus.io/*`.
+- agent уже `Rollout`, пока без canary steps (они появятся на этапе 6). CRD `Rollout` и
+  Prometheus, который scrape-ит под по аннотациям `prometheus.io/*`, ставит платформа.
 - Образ берётся из GHCR, тег в `deploy/agent/kustomization.yaml` меняет CI, см. [Релиз](#релиз).
-- У Prometheus нет PVC: метрики живут до рестарта пода. История в Redis лежит на PVC и
-  живёт до `make down`.
-- Версии charts, Argo CD и kind node image зафиксированы в `deploy/apps/values.yaml` и
-  `Makefile`.
-- Фоновая нагрузка урезана под один узел: Prometheus не собирает метрики apiserver и kubelet
-  (CPU и память подов есть в метриках cAdvisor), у Redis и Postgres LiteLLM TCP-пробы вместо
-  exec, у Postgres Langfuse пробы раз в 30 с, в Langfuse worker выключены ненужные фоновые
-  циклы. CPU подов в Prometheus:
-
-  ```promql
-  sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!=""}[5m]))
-  ```
+- История в Redis лежит на PVC и живёт до `make down`.
 
 ## LLM gateway и Langfuse
 
@@ -138,84 +120,59 @@ make down                        # удалить кластер целиком
 
 ```text
 agent ──(virtual key, metadata: trace, session, теги)──> LiteLLM Proxy ──> DeepSeek
-                                                          └─ langfuse_otel ──> Langfuse
-agent ──(score review_score на trace запроса)──> Langfuse public API
+                                                          └─ langfuse_otel ──> Langfuse (проект agent)
+agent ──(score review_score на trace запроса)──> Langfuse public API (проект agent)
 ```
 
-**LiteLLM Proxy** ([deploy/litellm](deploy/litellm), образ `ghcr.io/berriai/litellm:v1.108.9`):
+LiteLLM и Langfuse принадлежат платформе, их устройство описано в llm-platform. Агент видит
+только контракт тенанта — Secret `platform-llm`, см. ниже.
+
+**LiteLLM Proxy**:
 
 - alias `deepseek-flash` совпадает с `model.id` в `release.json`, провайдер задаёт только
   конфиг шлюза: смена провайдера (этап 9) не трогает агента;
-- ключ DeepSeek есть только в namespace `llm`, у агента — virtual key с бюджетом $1 на 30 дней.
-  Ключ регистрирует PostSync Job `litellm-agent-key`;
-- цены в `model_info` те же, что `model.pricing`: по ним LiteLLM считает spend ключа;
+- ключа DeepSeek у агента нет, только virtual key `agent` с бюджетом $1 на 30 дней. По
+  metadata ключа LiteLLM пишет трейсы его вызовов в проект Langfuse `agent`;
 - trace id задаёт агент и передаёт заголовком `traceparent`: поле `trace_id` в metadata
   OTel-интеграция LiteLLM не использует. Тот же id агент пишет в лог (`вызов LLM`), по нему
   запрос из лога находится в Langfuse;
-- `num_retries: 2` на сбои провайдера. Fallback на другую модель появится вместе со вторым
-  провайдером;
 - `stream_options.include_usage` и `response_format` доходят до DeepSeek как есть, поэтому
-  метрики стоимости и JSON mode разбора работают как без шлюза;
-- virtual keys, бюджеты и spend хранятся в своём Postgres.
+  метрики стоимости и JSON mode разбора работают как без шлюза.
 
-**Langfuse** (chart `langfuse` 2.2.4, Langfuse v4):
+**Langfuse** (проект `agent`):
 
 - каждый вызов LLM — generation в trace. Один `POST /chat` — один trace, повтор разбора
   попадает в тот же trace;
 - trace сгруппированы в сессии по `sessionId`, `clientId` идёт как user;
 - теги `release:<version>`, `prompt:<id>`, `model:<id>`, `mode:<mode>`: по ним в UI
   сравниваются релизы;
-- оценка разбора уходит score `review_score` на trace. Сбой Langfuse только логируется,
-  ответ клиенту от него не зависит;
-- ClickHouse свой, один узел без Keeper: chart ставит его через ClickHouse operator с
-  cert-manager, для kind это лишние компоненты. Системные логи `system.*_log` и профайлер
-  запросов выключены, остался `query_log` с TTL 1 день (его читает Langfuse worker). Потоков
-  асинхронных вставок 2 вместо 16, логгер синхронный: эти потоки просыпаются 100 раз в секунду
-  даже без работы. В простое ClickHouse ест ~6m CPU вместо ~75m;
-- org, project и пользователь создаются при первом старте (`LANGFUSE_INIT_*`), регистрация
-  в UI выключена;
+- оценка разбора уходит score `review_score` на trace ключами проекта `agent`. Сбой Langfuse
+  только логируется, ответ клиенту от него не зависит;
 - Langfuse v4 работает в режиме events_only: читать трейсы и score через public API v1 нельзя,
   только UI и `/api/public/v2/observations`. Запись score через `POST /api/public/scores`
   работает.
 
-Первый `make up` качает около 3 GB образов. На медленной сети `make wait` может выйти по
-таймауту, хотя стенд продолжает подниматься: `make wait` можно запустить ещё раз.
-LiteLLM ждёт свой Postgres в init-контейнере. Langfuse web стартует раньше своего Postgres и
-перезапускается, пока база не готова: у chart Langfuse нет настройки, чтобы этого избежать.
-
-UI LiteLLM открыт на http://localhost:14000/ui: логин `admin`, пароль — master key
-(`make litellm-password`, `sk-master-…`).
-
-Master key даёт полные права на шлюз: ключи, бюджеты, модели. У агента его нет, только virtual
-key.
-
 Проверка отказа по бюджету:
 
 ```bash
-make llm-budget BUDGET=0   # следующий запрос получит event: error
-                           # «422 Budget has been exceeded!»
-make llm-budget BUDGET=1   # вернуть
+make -C ../llm-platform llm-budget KEY=agent BUDGET=0   # следующий запрос получит event: error
+                                                        # «422 Budget has been exceeded!»
+make -C ../llm-platform llm-budget KEY=agent BUDGET=1   # вернуть
 ```
 
 ### Секреты в кластере
 
-`make secret` ([scripts/k8s-secrets.sh](scripts/k8s-secrets.sh)) обновляет `deepseek` из
-окружения при каждом запуске. Остальное генерирует один раз и не перезаписывает: новый `salt`
-или `encryption-key` сломал бы данные Langfuse.
+У агента один секрет, своих он не генерирует. `make up` вызывает `make tenant` платформы: при
+первом запуске она заводит virtual key и проект Langfuse `agent`, при повторных только заново
+копирует ключи в namespace `agent`.
 
-| Namespace  | Secret            | Что внутри                                      |
-|------------|-------------------|-------------------------------------------------|
-| `llm`      | `deepseek`        | ключ DeepSeek из `DEEPSEEK_API_KEY`             |
-| `llm`      | `litellm`         | master key, пароль Postgres, virtual key агента |
-| `llm`      | `langfuse-api`    | API-ключи проекта Langfuse для трейсов          |
-| `langfuse` | `langfuse-keys`   | `salt`, `encryption-key`, `nextauth-secret`     |
-| `langfuse` | `langfuse-init`   | org, project, API-ключи, пользователь UI        |
-| `langfuse` | `langfuse-*-auth` | пароли Postgres, Valkey, SeaweedFS, ClickHouse  |
-| `agent`    | `agent-llm`       | virtual key агента                              |
-| `agent`    | `langfuse-api`    | API-ключи проекта Langfuse для score            |
+| Namespace | Secret         | Что внутри                                                    |
+|-----------|----------------|---------------------------------------------------------------|
+| `agent`   | `platform-llm` | `LLM_BASE_URL`, `LLM_API_KEY` (virtual key), `LANGFUSE_HOST`, |
+|           |                | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`                  |
 
-Chart Langfuse умеет генерировать секреты сам, но под Argo CD helm `lookup` не видит кластер,
-и значения менялись бы на каждом sync.
+Rollout подключает его через `envFrom`. Ключ DeepSeek, master key LiteLLM и секреты Langfuse
+лежат в namespace платформы.
 
 ## CLI
 
@@ -518,8 +475,7 @@ src/api/main.ts        точка входа API
 src/cli/main.ts        REPL-клиент
 src/cli/input.ts       разбор ввода и выбор действия по этапу тренировки
 src/cli/style.ts       жирный текст для терминала
-deploy/kind/           конфиг kind-кластера
-deploy/bootstrap/      values Argo CD и root-app (app-of-apps)
+deploy/bootstrap/      root-app агента (app-of-apps) для Argo CD платформы
 deploy/apps/           Helm chart: Application на каждый компонент
 deploy/redis/, agent/  манифесты Redis и агента
 Makefile               make up / down и вспомогательные target-ы
