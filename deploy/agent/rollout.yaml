@@ -30,35 +30,19 @@ spec:
           ports:
             - name: http
               containerPort: 13000
+          # Контракт тенанта llm-platform: LLM_BASE_URL и LLM_API_KEY (virtual key LiteLLM с
+          # бюджетом), LANGFUSE_HOST и ключи проекта Langfuse агента для score на trace, который
+          # пишет LiteLLM. Секрет создаёт make tenant, в git его нет.
+          envFrom:
+            - secretRef:
+                name: platform-llm
           env:
             - name: PORT
               value: "13000"
             - name: REDIS_URL
               value: redis://redis:6379
-            # LLM через LiteLLM Proxy: у агента только virtual key с бюджетом, ключа DeepSeek
-            # в namespace agent нет. Секреты создаёт make secret, в git их нет.
-            - name: LLM_BASE_URL
-              value: http://litellm.llm:4000
-            - name: LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agent-llm
-                  key: LLM_API_KEY
             - name: LLM_METADATA
               value: "true"
-            # Langfuse: score разбора на trace, который пишет LiteLLM.
-            - name: LANGFUSE_HOST
-              value: http://langfuse-web.langfuse:3000
-            - name: LANGFUSE_PUBLIC_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: langfuse-api
-                  key: LANGFUSE_PUBLIC_KEY
-            - name: LANGFUSE_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: langfuse-api
-                  key: LANGFUSE_SECRET_KEY
           readinessProbe:
             httpGet:
               path: /healthz

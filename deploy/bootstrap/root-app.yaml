@@ -1,9 +1,10 @@
 # Корневой Application (app-of-apps): рендерит chart deploy/apps, тот создаёт Application на
 # каждый компонент стенда. make up применяет этот файл и подставляет ветку в targetRevision.
+# Имя не root: Argo CD общий с llm-platform и другими тенантами.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: root
+  name: agent-deploy-lab
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
