@@ -223,9 +223,10 @@ bootstrap агента (make up):
 | Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
-| Flaky eval    | фейлы injection на `main` были ошибками grader: двусмысленный           |
-|               | `llm-rubric`. Rubric уточнены (0.12.1), упавший injection-тест          |
-|               | повторяется 2 раза и проходит, только если зелёный в обоих повторах     |
+| Flaky eval    | фейлы на `main` — в основном ошибки grader (двусмысленный               |
+|               | `llm-rubric`) и редкие выбросы модели. Rubric уточнены (0.12.1),        |
+|               | упавший тест любого набора повторяется 2 раза и проходит, только если   |
+|               | зелёный в обоих повторах; пороги прежние                                |
 | Review        | PR template с чеклистом промпта и отката; CODEOWNERS назначает review,  |
 |               | но не обязателен: владелец один, свой PR не одобрить                    |
 | Отчёт eval    | sticky-комментарий бота в PR из `reports/summary.md`, обновляется на    |
