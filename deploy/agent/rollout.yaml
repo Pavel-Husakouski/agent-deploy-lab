@@ -64,6 +64,9 @@ spec:
               value: redis://redis:6379
             - name: LLM_METADATA
               value: "true"
+            # Учебный плохой релиз (этап 8, проверка runbook): canary должен прерваться.
+            - name: FAULT_ERROR_RATE
+              value: "0.5"
           readinessProbe:
             httpGet:
               path: /healthz
