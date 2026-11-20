@@ -40,4 +40,12 @@ describe('loadConfig', () => {
     });
     expect(config.LANGFUSE_HOST).toBe('http://lf:3000');
   });
+
+  it('FAULT_ERROR_RATE: по умолчанию 0, доля от 0 до 1', () => {
+    expect(loadConfig({ LLM_API_KEY: 'k' }).FAULT_ERROR_RATE).toBe(0);
+    expect(loadConfig({ LLM_API_KEY: 'k', FAULT_ERROR_RATE: '0.5' }).FAULT_ERROR_RATE).toBe(0.5);
+    expect(() => loadConfig({ LLM_API_KEY: 'k', FAULT_ERROR_RATE: '1.5' })).toThrow(
+      /FAULT_ERROR_RATE/,
+    );
+  });
 });

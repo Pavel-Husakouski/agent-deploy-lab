@@ -19,6 +19,8 @@ const ConfigSchema = z
     REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
     PORT: z.coerce.number().int().min(1).max(65535).default(13000),
     HOST: z.string().default('0.0.0.0'),
+    // Только для учебного «плохого релиза»: доля /chat, которая отвечает ошибкой.
+    FAULT_ERROR_RATE: z.coerce.number().min(0).max(1).default(0),
   })
   .refine(
     (c) => {

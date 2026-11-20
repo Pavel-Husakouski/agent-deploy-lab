@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { buildApp } from '../src/api/server.js';
+import { buildApp, FAULT_MESSAGE } from '../src/api/server.js';
 import type { HistoryRecord, HistoryStore } from '../src/history.js';
 import { makeRecord } from '../src/history.js';
 import type { Score, ScoreSink } from '../src/langfuse.js';
@@ -563,6 +563,63 @@ describe('POST /chat', () => {
 
     expect(res.statusCode).toBe(400);
     expect(llm.calls).toHaveLength(0);
+  });
+});
+
+describe('POST /chat, учебный сбой FAULT_ERROR_RATE', () => {
+  it('сработавший сбой: event: error без вызова LLM и записи истории', async () => {
+    const llm = new FakeLlm(['a']);
+    const store = new MemoryStore();
+    app = buildApp({ llm, store, release: RELEASE, faultErrorRate: 0.5, random: () => 0.4 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/chat',
+      payload: { sessionId: 's1', role: ROLE, mode: 'question' },
+    });
+
+    expect(parseSse(res.body)).toEqual([{ event: 'error', data: { message: FAULT_MESSAGE } }]);
+    expect(llm.calls).toHaveLength(0);
+    expect(await store.read('s1')).toEqual([]);
+    const body = (await app.inject({ method: 'GET', url: '/metrics' })).body;
+    expect(body).toMatch(/agent_chat_requests_total\{[^}]*status="error"[^}]*\} 1/);
+  });
+
+  it('не сработавший сбой не мешает ответу', async () => {
+    const llm = new FakeLlm(['a']);
+    app = buildApp({
+      llm,
+      store: new MemoryStore(),
+      release: RELEASE,
+      faultErrorRate: 0.5,
+      random: () => 0.6,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/chat',
+      payload: { sessionId: 's1', role: ROLE, mode: 'question' },
+    });
+
+    expect(parseSse(res.body).at(-1)?.event).toBe('done');
+    expect(llm.calls).toHaveLength(1);
+  });
+
+  it('по умолчанию сбой выключен', async () => {
+    app = buildApp({
+      llm: new FakeLlm(['a']),
+      store: new MemoryStore(),
+      release: RELEASE,
+      random: () => 0,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/chat',
+      payload: { sessionId: 's1', role: ROLE, mode: 'question' },
+    });
+
+    expect(parseSse(res.body).at(-1)?.event).toBe('done');
   });
 });
 

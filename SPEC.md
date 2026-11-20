@@ -1,7 +1,8 @@
 # agent-deploy-lab: спецификация (черновик)
 
 > **Статус:** утверждён к этапу 1, 2026-10-28; этап 5 готов 2026-11-02; этап 10 (вне очереди,
-> до этапа 6) готов 2026-11-16; этап 11 (вне очереди) готов 2026-11-19. Следующий — этап 6.
+> до этапа 6) готов 2026-11-16; этап 11 (вне очереди) готов 2026-11-19; этап 6 готов
+> 2026-11-20. Следующий — этап 7.
 > Открытые вопросы в конце файла закрыть к их этапам.
 
 ## Контекст для сессии
@@ -47,7 +48,7 @@
 | LLM        | пакет `openai`: в compose DeepSeek напрямую, в кластере через LiteLLM Proxy      |
 | Трейсы     | Langfuse: trace на запрос, сессии, теги релиза, score разбора                    |
 | State      | Redis: история диалога по `sessionId`, в записи есть `schemaVersion`             |
-| Промпты    | `prompts/*.md`, выбор версии через feature flag или `release.json`               |
+| Промпты    | `prompts/*.md`, версию выбирает `release.json`                                   |
 | Manifest   | `release.json`: версия, модель, параметры, версия и sha256 промпта, eval dataset |
 | Метрики    | requests, errors, latency, токены, стоимость запроса, версия релиза в labels     |
 
@@ -93,8 +94,9 @@ bootstrap агента (make up):
 
 локальный kind (кластер llm-platform):
   Argo CD ──(pull)──> GitHub repo: видит новый тег в deploy/
-          ──> Argo Rollouts: canary 10% → 50% → 100%
-                 └── AnalysisTemplate: Prometheus (error rate, p95 latency, cost)
+          ──> Argo Rollouts: canary 50% → 100% (2 реплики)
+                 └── AnalysisTemplate: Prometheus, canary против stable
+                     (error rate, p95 latency, cost)
                  └── анализ не прошёл ──> автооткат на stable
   Redis: история диалогов, Prometheus: метрики
   agent ──> LiteLLM Proxy (virtual key, бюджет) ──> DeepSeek
@@ -119,7 +121,6 @@ bootstrap агента (make up):
 | CD (GitOps)         | Argo CD                                                            |
 | Выкатка             | Argo Rollouts                                                      |
 | Метрики             | Prometheus (kube-prometheus-stack или минимальный chart)           |
-| Feature flags       | flagd (OpenFeature SDK), процентный rollout версии промпта         |
 | State               | Redis                                                              |
 | LLM gateway         | LiteLLM Proxy: alias модели, virtual key с бюджетом, ретраи        |
 | Трейсы LLM          | Langfuse self-hosted, chart `langfuse`, свой ClickHouse            |
@@ -134,7 +135,7 @@ bootstrap агента (make up):
 | 3  | GitHub Actions: typecheck, vitest, manifest check, promptfoo         | 2. release checks  |
 | 4  | Makefile + Argo CD app-of-apps: Rollouts, Prometheus, Redis из git   | 5. IaC             |
 | 5  | GitOps: CI коммитит тег в `deploy/`, Argo CD синхронизирует          | CD                 |
-| 6  | Canary с AnalysisTemplate, feature flag на версию промпта            | 3. выкатка         |
+| 6  | Canary с AnalysisTemplate, автооткат по метрикам                     | 3. выкатка         |
 | 7  | Сценарии отката: «сломанный» релиз; v2 пишет историю в новом формате | 4. rollback        |
 | 8  | PR template, CODEOWNERS на `prompts/`, отчёт promptfoo в PR, runbook | 6. review и docs   |
 | 9  | (опц.) Terraform в облаке: managed LLM endpoint + budget alert       | 5. IaC             |
@@ -151,7 +152,7 @@ bootstrap агента (make up):
    и сносит `make up` / `make down` в llm-platform, а `make down` агента удаляет только его
    Application и namespace.
 5. Merge в `main` сам доезжает до кластера без ручных команд.
-6. Плохой релиз откатывается сам по метрикам; флаг переключает промпт без деплоя.
+6. Плохой релиз откатывается сам по метрикам, хороший доходит до 100% после анализа.
 7. После отката v1 читает записи, сделанные v2, или есть обратная миграция.
 8. Runbook отката проходится по шагам без подсказок.
 9. (опц.) `terraform plan` показывает diff, `apply`/`destroy` управляют endpoint и budget
@@ -210,7 +211,10 @@ bootstrap агента (make up):
 | Окружение     | есть `make` 4.4, `git` 2.55, `node` 26.12; RAM 30 GB, свободно ~16 GB   |
 | `gh` scopes   | нет `workflow`: до push `.github/workflows` выполнить                   |
 |               | `gh auth refresh -s workflow`                                           |
-| Feature flags | flagd: процент и таргетинг по `sessionId`, смена без рестарта пода      |
+| Feature flags | не делаем: промпт меняется релизом и проходит тот же canary             |
+| Canary        | 2 реплики, шаг 50% и пауза 5 мин, анализ canary против stable;          |
+|               | без трафика Inconclusive и пауза, нагрузка — `npm run load`             |
+| Плохой релиз  | учебная env `FAULT_ERROR_RATE`: доля `/chat` с ошибкой до вызова LLM    |
 | Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
@@ -220,7 +224,7 @@ bootstrap агента (make up):
 | Redis в k8s   | свои манифесты (StatefulSet, AOF на PVC), без Bitnami chart             |
 | Образ         | CI пушит в GHCR, тег `<version>-<sha7>`, пакет public                   |
 | Push тега     | deploy key с bypass в ruleset, секрет в окружении `release`             |
-| agent в k8s   | `Rollout` с этапа 4, canary steps добавит этап 6                        |
+| agent в k8s   | `Rollout` с этапа 4, canary с анализом с этапа 6                        |
 | Доступ        | API 13000 → NodePort 30000 из резерва 13000–13009 платформы,            |
 |               | остальные порты (Argo CD, Langfuse, LiteLLM...) — у платформы           |
 | Роль          | свободный текст от клиента, формат и eval injection, не хранится в API  |

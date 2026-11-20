@@ -14,7 +14,8 @@
     "eval": "tsx scripts/eval.ts",
     "dev": "tsx watch src/api/main.ts",
     "start": "tsx src/api/main.ts",
-    "cli": "tsx src/cli/main.ts"
+    "cli": "tsx src/cli/main.ts",
+    "load": "tsx scripts/load.ts"
   },
   "dependencies": {
     "fastify": "^5.12.7",

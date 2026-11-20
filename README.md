@@ -3,13 +3,15 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Готовы этапы 1–5, 10 и 11, следующий — этап 6 (canary).
+Готовы этапы 1–6, 10 и 11, следующий — этап 7 (сценарии отката).
 
 - **Этапы 1–5:** API + CLI + DeepSeek + Redis, release manifest с проверкой, Dockerfile,
   метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально через
   `docker compose` или в kind-кластере, куда Argo CD доставляет агента из git
   (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
   коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
+- **Этап 6:** новая версия выкатывается canary: половина трафика, анализ метрик canary против
+  stable в Prometheus, при провале автооткат (см. [Canary](#canary)).
 - **Этап 10:** в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и бюджетом, а
   каждый вызов виден трейсом в self-hosted Langfuse
   (см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
@@ -112,10 +114,53 @@ Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах 
 
 - У всех Application включены `automated`, `prune` и `selfHeal`: ручная правка в кластере
   откатывается к состоянию из git.
-- agent уже `Rollout`, пока без canary steps (они появятся на этапе 6). CRD `Rollout` и
-  Prometheus, который scrape-ит под по аннотациям `prometheus.io/*`, ставит платформа.
+- agent — `Rollout` с canary и анализом, см. [Canary](#canary). CRD `Rollout` и Prometheus,
+  который scrape-ит под по аннотациям `prometheus.io/*`, ставит платформа.
 - Образ берётся из GHCR, тег в `deploy/agent/kustomization.yaml` меняет CI, см. [Релиз](#релиз).
 - История в Redis лежит на PVC и живёт до `make down`.
+
+## Canary
+
+Новая версия агента (новый тег образа или любая правка шаблона пода) выкатывается не сразу:
+
+```text
+2 реплики stable ──> 1 stable + 1 canary (≈50% трафика), пауза 5 мин ──> 2 реплики новой версии
+                        └── AnalysisRun agent-canary раз в минуту, с первой минуты
+                               └── провал ──> abort: canary в 0, трафик на stable
+```
+
+- Ingress-контроллера на платформе нет, Service делит трафик поровну между подами, поэтому доля
+  canary задаётся числом подов: 2 реплики дают один шаг 50%.
+- Первый деплой (stable ещё нет) canary не проходит.
+- [deploy/agent/analysis.yaml](deploy/agent/analysis.yaml) сравнивает canary со stable, а не с
+  историческим baseline. Поды различает метка `rollouts_pod_template_hash`:
+
+| Метрика                  | Как считается                                              | Провал  |
+|--------------------------|------------------------------------------------------------|---------|
+| `error-rate-diff`        | доля `status=error` у canary минус та же доля у stable     | > 0.05  |
+| `p95-latency-ratio`      | p95 `agent_chat_duration_seconds` canary / stable          | > 2     |
+| `cost-per-request-ratio` | стоимость успешного ответа canary / stable                 | > 1.5   |
+
+- Окно 2 минуты, `failureLimit: 1`: один выброс не прерывает выкатку, два — прерывают.
+- Без трафика запросы дают NaN, измерение Inconclusive, и Rollout встаёт на паузу. Поэтому во
+  время выкатки нужна нагрузка: `npm run load` (по умолчанию 20 вопросов в минуту 10 минут,
+  около $0.07). Выкатку после такой паузы продолжает ручной promote: действие `promote-full`
+  у Rollout в UI Argo CD или `kubectl argo rollouts promote agent -n agent` (нужен плагин
+  kubectl-argo-rollouts).
+
+```bash
+kubectl --context kind-llm-platform -n agent get rollout agent
+kubectl --context kind-llm-platform -n agent get analysisrun
+kubectl --context kind-llm-platform -n agent describe analysisrun <name>   # значения метрик
+```
+
+**Плохой релиз.** Учебная переменная `FAULT_ERROR_RATE` (доля от 0 до 1) заставляет `/chat`
+отвечать ошибкой до вызова LLM. Коммит с `FAULT_ERROR_RATE: "0.5"` в `deploy/agent/rollout.yaml`
+и нагрузка во время выкатки: `error-rate-diff` около 0.5, анализ проваливается, Rollout
+прерывается и остаётся на stable. Статус Rollout — `Degraded`, пока в git не вернут хорошую
+версию: Argo CD не откатывает git, он показывает, что желаемое состояние не выкатилось.
+На стенде (2026-11-20) так и было: `error-rate-diff` 0.6 два измерения подряд, abort через
+3 минуты после начала выкатки, все запросы снова на stable.
 
 ## LLM gateway и Langfuse
 
@@ -392,7 +437,8 @@ Job `release` в [ci.yml](.github/workflows/ci.yml) запускается то�
    `ghcr.io/pavel-husakouski/agent-deploy-lab:0.3.0-bca0a54`;
 2. меняет `newName` и `newTag` в `deploy/agent/kustomization.yaml` и коммитит в `main` от
    `github-actions[bot]` с `[skip ci]`;
-3. Argo CD замечает коммит при опросе git (несколько минут), Rollout заменяет под.
+3. Argo CD замечает коммит при опросе git (несколько минут), Rollout выкатывает новую версию
+   canary с анализом (см. [Canary](#canary)): на время выкатки нужна нагрузка `npm run load`.
 
 | Настройка         | Зачем                                                               |
 |-------------------|---------------------------------------------------------------------|
@@ -446,6 +492,8 @@ curl -s localhost:13000/metrics | grep ^agent_
 | `LANGFUSE_SECRET_KEY` | —                          | не задаются                             |
 | `REDIS_URL`           | `redis://localhost:6379`   | в compose `redis://redis:6379`          |
 | `PORT`                | `13000`                    |                                         |
+| `FAULT_ERROR_RATE`    | `0`                        | учебный сбой: доля `/chat` с ошибкой,   |
+|                       |                            | см. [Canary](#canary)                   |
 
 В compose и eval агент ходит в DeepSeek напрямую, в кластере — через LiteLLM.
 
@@ -460,6 +508,8 @@ curl -s localhost:13000/metrics | grep ^agent_
 | `npm run eval`             | eval gate на promptfoo, см. выше                              |
 | `npm run dev`              | API на хосте с перезапуском при изменениях                    |
 | `npm run cli`              | консольный клиент                                             |
+| `npm run load`             | нагрузка вопросами для анализа canary: `--rate` в минуту,     |
+|                            | `--duration` в секундах, `--url`                              |
 
 Структура:
 
@@ -480,9 +530,9 @@ src/cli/input.ts       разбор ввода и выбор действия п
 src/cli/style.ts       жирный текст для терминала
 deploy/bootstrap/      root-app агента (app-of-apps) для Argo CD платформы
 deploy/apps/           Helm chart: Application на каждый компонент
-deploy/redis/, agent/  манифесты Redis и агента
+deploy/redis/, agent/  манифесты Redis и агента (Rollout, AnalysisTemplate canary)
 Makefile               make up / down и вспомогательные target-ы
-scripts/               check-manifest.ts, eval.ts (eval gate)
+scripts/               check-manifest.ts, eval.ts (eval gate), load.ts (нагрузка для canary)
 evals/                 promptfoo: provider.ts, наборы <evalDataset>/*.yaml
 .github/workflows/     CI
 prompts/               system prompts, выпущенные файлы не меняются
