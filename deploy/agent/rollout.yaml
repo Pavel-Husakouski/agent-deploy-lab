@@ -1,4 +1,4 @@
-# API агента. Rollout вместо Deployment: canary steps и анализ добавит этап 6.
+# API агента. Rollout вместо Deployment: новая версия выкатывается canary с анализом метрик.
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
@@ -6,13 +6,30 @@ metadata:
   labels:
     app.kubernetes.io/name: agent
 spec:
-  replicas: 1
+  # Без ingress-контроллера трафик делится числом подов: 2 реплики дают шаг 50%.
+  replicas: 2
   revisionHistoryLimit: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: agent
   strategy:
-    canary: {}
+    canary:
+      # Анализ идёт фоном с первого шага. Провал прерывает выкатку: canary масштабируется в
+      # 0, весь трафик остаётся на stable. Первый деплой canary не проходит, он сразу 100%.
+      analysis:
+        templates:
+          - templateName: agent-canary
+        args:
+          - name: canary-hash
+            valueFrom:
+              podTemplateHashValue: Latest
+          - name: stable-hash
+            valueFrom:
+              podTemplateHashValue: Stable
+      steps:
+        - setWeight: 50
+        # За 5 минут анализ успевает сделать 4–5 измерений.
+        - pause: { duration: 5m }
   template:
     metadata:
       labels:

@@ -36,8 +36,13 @@ const app = buildApp({
         secretKey: config.LANGFUSE_SECRET_KEY,
       }),
     }),
+  faultErrorRate: config.FAULT_ERROR_RATE,
   logger: { level: process.env['LOG_LEVEL'] ?? 'info' },
 });
+
+if (config.FAULT_ERROR_RATE > 0) {
+  app.log.warn({ rate: config.FAULT_ERROR_RATE }, 'включён учебный сбой FAULT_ERROR_RATE');
+}
 
 redis.on('error', (err) => {
   // Без обработчика ioredis пишет необработанные ошибки; переподключение идёт само.

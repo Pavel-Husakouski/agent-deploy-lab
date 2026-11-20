@@ -17,8 +17,14 @@ export interface AppDeps {
   metrics?: Metrics;
   // Куда отправлять оценку разбора (Langfuse). Без него оценка есть только в метриках.
   scores?: ScoreSink;
+  // Учебный сбой для показа автоотката canary: доля /chat, которая падает до вызова LLM.
+  faultErrorRate?: number;
+  // Источник случайности для faultErrorRate, в тестах подменяется.
+  random?: () => number;
   logger?: FastifyServerOptions['logger'];
 }
+
+export const FAULT_MESSAGE = 'учебный сбой (FAULT_ERROR_RATE)';
 
 const ChatBaseShape = {
   sessionId: IdSchema,
@@ -49,6 +55,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: deps.logger ?? false });
   const { manifest, systemPrompt: promptTemplate } = deps.release;
   const metrics = deps.metrics ?? createMetrics(manifest);
+  const faultErrorRate = deps.faultErrorRate ?? 0;
+  const random = deps.random ?? Math.random;
 
   app.get('/healthz', async (_req, reply) => {
     const redisOk = await deps.store.ping();
@@ -160,6 +168,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       return text;
     };
     try {
+      // Падает как ошибка LLM (status=error, event: error), но без вызова и его стоимости.
+      if (faultErrorRate > 0 && random() < faultErrorRate) throw new Error(FAULT_MESSAGE);
       if (mode === 'answer') {
         // Разбор приходит JSON: клиенту он уходит одним событием после проверки схемы, а в
         // историю пишется markdown, чтобы discuss видел разбор как текст.
