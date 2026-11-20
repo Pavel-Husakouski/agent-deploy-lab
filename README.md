@@ -3,17 +3,20 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Сейчас готов **этап 5**: API + CLI + DeepSeek + Redis, release manifest с проверкой,
-Dockerfile, метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально
-через `docker compose` или тенантом в kind-кластере
-[llm-platform](https://github.com/Pavel-Husakouski/llm-platform), куда Argo CD доставляет его
-из git (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
-коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
+Готовы этапы 1–5, 10 и 11, следующий — этап 6 (canary).
 
-Готов и **этап 10**: в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и
-бюджетом, а каждый вызов виден трейсом в self-hosted Langfuse
-(см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)). Шлюз, Langfuse и кластер вынесены в
-общую платформу llm-platform, агент получает от неё ключи через `make tenant`.
+- **Этапы 1–5:** API + CLI + DeepSeek + Redis, release manifest с проверкой, Dockerfile,
+  метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально через
+  `docker compose` или в kind-кластере, куда Argo CD доставляет агента из git
+  (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
+  коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
+- **Этап 10:** в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и бюджетом, а
+  каждый вызов виден трейсом в self-hosted Langfuse
+  (см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
+- **Этап 11:** кластер, Argo CD, LiteLLM, Langfuse, Prometheus и Argo Rollouts вынесены в
+  общую платформу [llm-platform](https://github.com/Pavel-Husakouski/llm-platform). Агент —
+  её тенант: ключи получает через `make tenant`, в своём `deploy/` держит только agent и Redis
+  (см. [INFRA.md](INFRA.md)).
 
 Приложение — тренер к интервью на роль, которую выбирает клиент: задаёт вопрос, поясняет его
 по запросу, оценивает ответ по шкале 0–10, даёт эталонный ответ и обсуждает его, пока не нажат
