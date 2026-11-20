@@ -1,7 +1,9 @@
 # Анализ canary: метрики пода новой версии сравниваются с подом stable, а не с историческим
 # baseline. Поды различает метка rollouts_pod_template_hash, которую Prometheus платформы
-# берёт из labels пода. Без трафика запросы дают NaN: ни success, ни failure не выполняется,
-# измерение Inconclusive, и Rollout встаёт на паузу вместо выкатки вслепую (npm run load).
+# берёт из labels пода. Если трафик встал, запросы дают NaN: ни success, ни failure не
+# выполняется, измерение Inconclusive, и Rollout встаёт на паузу вместо выкатки вслепую. Если у
+# canary не было ни одного запроса, серий нет, измерение Error, и после 5 ошибок подряд выкатка
+# прерывается. Во время выкатки нужна нагрузка: npm run load.
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
