@@ -3,7 +3,7 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Готовы этапы 1–6, 10 и 11, следующий — этап 7 (сценарии отката).
+Готовы этапы 1–7, 10 и 11, следующий — этап 8 (review и runbook).
 
 - **Этапы 1–5:** API + CLI + DeepSeek + Redis, release manifest с проверкой, Dockerfile,
   метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально через
@@ -12,6 +12,9 @@ canary, rollback, IaC, code review. Подробности и план этап�
   коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
 - **Этап 6:** новая версия выкатывается canary: половина трафика, анализ метрик canary против
   stable в Prometheus, при провале автооткат (см. [Canary](#canary)).
+- **Этап 7:** откат релиза, который уже записал state: история в формате v2 читается
+  предыдущим релизом, аварийный откат тегом без canary, обратная миграция для отката дальше
+  окна совместимости (см. [Откат](#откат)).
 - **Этап 10:** в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и бюджетом, а
   каждый вызов виден трейсом в self-hosted Langfuse
   (см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
@@ -161,6 +164,56 @@ kubectl --context kind-llm-platform -n agent describe analysisrun <name>   # з�
 версию: Argo CD не откатывает git, он показывает, что желаемое состояние не выкатилось.
 На стенде (2026-11-20) так и было: `error-rate-diff` 0.6 два измерения подряд, abort через
 3 минуты после начала выкатки, все запросы снова на stable.
+
+## Откат
+
+Откат агента — это откат manifest целиком и совместимость state, а не revert кода. Промпт,
+модель и параметры зашиты в образ вместе с `release.json`, поэтому прошлый тег образа — это
+прошлый manifest. Но история в Redis общая для всех версий: её успевает записать и новая
+версия, и даже canary, который анализ потом прервал.
+
+**Совместимость истории: expand → contract.** Формат меняется в два релиза:
+
+| Релиз  | Читает | Пишет | Зачем                                                         |
+|--------|--------|-------|---------------------------------------------------------------|
+| 0.10.0 | v1     | v1    | до этапа 7: запись v2 пропускается, сессия выглядит пустой    |
+| 0.11.0 | v1, v2 | v1    | expand: сначала выкатывается читатель нового формата          |
+| 0.12.0 | v1, v2 | v2    | новый формат; откат на 0.11.0 историю не теряет               |
+
+Чтение v1 можно убрать (contract), когда истечёт TTL последних записей v1 и откат на 0.11.0
+станет не нужен. Откат на 0.10.0 после записей v2 — уже за окном совместимости: сессии,
+начатые на 0.12.0, отвечают `409 no_question`, растёт
+`agent_history_skipped_total{schema_version="2"}`. Для этого случая есть обратная
+миграция `npm run migrate:history`.
+
+**Аварийный откат тегом.** Быстрый путь — вернуть в `deploy/` тег образа, который уже работал:
+
+```bash
+git log --oneline -- deploy/agent/kustomization.yaml   # прошлые теги
+gh workflow run rollback.yml -f tag=0.11.0-<sha7>
+```
+
+- [rollback.yml](.github/workflows/rollback.yml) проверяет, что образ есть в GHCR, и коммитит
+  тег в `main` через deploy key с `[skip ci]`, иначе job `release` вернул бы тег HEAD.
+- `rollbackWindow: { revisions: 2 }` в Rollout: возврат на одну из двух последних ревизий
+  идёт сразу на 100%, без canary-шага, анализа и нагрузки.
+- Код в `main` остаётся прежним: следующий merge снова выкатит HEAD. После отката нужен
+  revert или fix-forward через PR.
+- Не годится: `kubectl argo rollouts undo` и правка Rollout руками. У Application включён
+  `selfHeal`, Argo CD вернёт состояние из git. Не годится и PR, который меняет только тег:
+  после merge job `release` соберёт HEAD и запишет его тег.
+
+**Обратная миграция** v2 → v1 переписывает сессии, TTL ключей сохраняет, параллельную запись
+API не теряет (WATCH/MULTI):
+
+```bash
+kubectl --context kind-llm-platform -n agent port-forward svc/redis 16379:6379 &
+npm run migrate:history -- --url redis://localhost:16379 --dry-run
+npm run migrate:history -- --url redis://localhost:16379
+```
+
+Порядок, если откат уходит за окно: сначала откат тегом, потом миграция. В обратном порядке
+ещё работающая новая версия успеет дописать v2.
 
 ## LLM gateway и Langfuse
 
@@ -326,11 +379,18 @@ curl -N localhost:13000/chat -H 'content-type: application/json' \
 ## State
 
 История сессии (один вопрос, уточнения, ответ и обсуждение) — Redis list по ключу
-`session:{sessionId}`, TTL 7 дней продлевается при каждой записи. Элемент списка — JSON:
+`session:{sessionId}`, TTL 7 дней продлевается при каждой записи. Элемент списка — JSON.
+С 0.12.0 API пишет формат v2: режим хода, релиз, разбор объектом (`review`, схема из
+`src/review.ts`) вместо markdown в `content`:
 
 ```json
-{ "schemaVersion": 1, "role": "user", "content": "...", "ts": "2026-10-28T12:00:00.000Z" }
+{ "schemaVersion": 2, "role": "assistant", "mode": "answer", "release": "0.12.0",
+  "review": { "kind": "review", "score": 7, "...": "..." }, "ts": "2026-11-20T12:00:00.000Z" }
 ```
+
+До 0.12.0 писался v1: `{ "schemaVersion": 1, "role", "content", "ts" }`. При чтении API
+приводит обе версии к v1 (разбор снова становится markdown), записи другой версии пропускает и
+считает в `agent_history_skipped_total`. Почему так — см. [Откат](#откат).
 
 Обе реплики (user и assistant) дописываются только после успешного завершения стрима.
 Redis запущен с `--appendonly yes`, поэтому история переживает рестарт и API, и Redis.
@@ -455,19 +515,21 @@ Job `release` в [ci.yml](.github/workflows/ci.yml) запускается то�
 
 ## Метрики
 
-| Метрика                       | Тип       | Labels и смысл                                   |
-|-------------------------------|-----------|--------------------------------------------------|
-| `agent_chat_requests_total`   | counter   | `status`: ok, error, aborted, bad_request,       |
-|                               |           | conflict, unavailable                            |
-| `agent_chat_duration_seconds` | histogram | `status`; от запроса до конца стрима             |
-| `agent_chat_ttft_seconds`     | histogram | время до первого фрагмента ответа LLM            |
-| `agent_llm_tokens_total`      | counter   | `type`: prompt, completion (из `usage` DeepSeek) |
-|                               |           | и `mode`: question, clarify, answer, discuss     |
-| `agent_llm_cost_usd_total`    | counter   | `mode`; по `model.pricing`, без скидки за кэш    |
-| `agent_llm_truncated_total`   | counter   | ответы, обрезанные по `maxTokens`                |
-| `agent_llm_invalid_output_total` | counter | разборы не по схеме, каждая попытка           |
-| `agent_review_score`          | histogram | оценка ответа 0–10, без `redirect`               |
-| `agent_release_info`          | gauge = 1 | все поля manifest                                |
+| Метрика                          | Тип       | Labels и смысл                                   |
+|----------------------------------|-----------|--------------------------------------------------|
+| `agent_chat_requests_total`      | counter   | `status`: ok, error, aborted, bad_request,       |
+|                                  |           | conflict, unavailable                            |
+| `agent_chat_duration_seconds`    | histogram | `status`; от запроса до конца стрима             |
+| `agent_chat_ttft_seconds`        | histogram | время до первого фрагмента ответа LLM            |
+| `agent_llm_tokens_total`         | counter   | `type`: prompt, completion (из `usage` DeepSeek) |
+|                                  |           | и `mode`: question, clarify, answer, discuss     |
+| `agent_llm_cost_usd_total`       | counter   | `mode`; по `model.pricing`, без скидки за кэш    |
+| `agent_llm_truncated_total`      | counter   | ответы, обрезанные по `maxTokens`                |
+| `agent_llm_invalid_output_total` | counter   | разборы не по схеме, каждая попытка              |
+| `agent_review_score`             | histogram | оценка ответа 0–10, без `redirect`               |
+| `agent_history_skipped_total`    | counter   | `schema_version`: номер или `invalid`;           |
+|                                  |           | записи истории, которые API не прочитал          |
+| `agent_release_info`             | gauge = 1 | все поля manifest                                |
 
 Ко всем метрикам добавлены labels `release`, `prompt`, `model`, плюс стандартные метрики
 процесса Node (`process_*`, `nodejs_*`). Токены берутся из последнего чанка стрима
@@ -510,6 +572,7 @@ curl -s localhost:13000/metrics | grep ^agent_
 | `npm run cli`              | консольный клиент                                             |
 | `npm run load`             | нагрузка вопросами для анализа canary: `--rate` в минуту,     |
 |                            | `--duration` в секундах, `--url`                              |
+| `npm run migrate:history`  | обратная миграция истории v2 → v1, см. [Откат](#откат)        |
 
 Структура:
 
@@ -532,9 +595,10 @@ deploy/bootstrap/      root-app агента (app-of-apps) для Argo CD пла
 deploy/apps/           Helm chart: Application на каждый компонент
 deploy/redis/, agent/  манифесты Redis и агента (Rollout, AnalysisTemplate canary)
 Makefile               make up / down и вспомогательные target-ы
-scripts/               check-manifest.ts, eval.ts (eval gate), load.ts (нагрузка для canary)
+scripts/               check-manifest.ts, eval.ts (eval gate), load.ts (нагрузка для canary),
+                       migrate-history.ts (обратная миграция истории)
 evals/                 promptfoo: provider.ts, наборы <evalDataset>/*.yaml
-.github/workflows/     CI
+.github/workflows/     CI и аварийный откат (rollback.yml)
 prompts/               system prompts, выпущенные файлы не меняются
 release.json           release manifest
 Dockerfile             multi-stage сборка образа API
