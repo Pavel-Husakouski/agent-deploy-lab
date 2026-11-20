@@ -80,7 +80,8 @@ kind-кластер `llm-platform`, Argo CD, LiteLLM, Langfuse, Prometheus и Ar
 
 Нужны `docker`, `kind`, `kubectl`, `make` и поднятая платформа (её требования — в README
 llm-platform). Порт 13000 на `127.0.0.1` пробрасывает кластер платформы, поэтому сначала
-`docker compose down`.
+`docker compose down`. Для управления выкаткой из терминала (`kubectl argo rollouts`) —
+плагин версии контроллера: `make -C ../llm-platform tools`.
 
 ```bash
 git clone https://github.com/Pavel-Husakouski/llm-platform.git ../llm-platform
@@ -152,7 +153,7 @@ Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах 
   около $0.07). Без неё бывает два исхода. Если серии canary в Prometheus есть, но трафик
   встал, запросы дают NaN, измерение Inconclusive, и Rollout встаёт на паузу; продолжает
   ручной promote: действие `promote-full` у Rollout в UI Argo CD или
-  `kubectl argo rollouts promote agent -n agent` (нужен плагин kubectl-argo-rollouts). Если у
+  `kubectl argo rollouts promote agent -n agent` (плагин: `make -C ../llm-platform tools`). Если у
   нового canary-пода не было ни одного запроса, серий нет, запрос пустой, измерение Error, и
   после 5 ошибок подряд (`consecutiveErrorLimit` 4) выкатка прерывается. Повтор — действие
   `retry` в UI Argo CD или `kubectl argo rollouts retry rollout agent -n agent`, уже под
