@@ -144,8 +144,9 @@ Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах 
 - Окно 2 минуты, `failureLimit: 1`: один выброс не прерывает выкатку, два — прерывают.
 - Без трафика запросы дают NaN, измерение Inconclusive, и Rollout встаёт на паузу. Поэтому во
   время выкатки нужна нагрузка: `npm run load` (по умолчанию 20 вопросов в минуту 10 минут,
-  около $0.06). После паузы выкатку продолжает `kubectl argo rollouts promote agent -n agent`
-  или повторный sync после новой нагрузки.
+  около $0.07). Выкатку после такой паузы продолжает ручной promote: действие `promote-full`
+  у Rollout в UI Argo CD или `kubectl argo rollouts promote agent -n agent` (нужен плагин
+  kubectl-argo-rollouts).
 
 ```bash
 kubectl --context kind-llm-platform -n agent get rollout agent
@@ -158,6 +159,8 @@ kubectl --context kind-llm-platform -n agent describe analysisrun <name>   # з�
 и нагрузка во время выкатки: `error-rate-diff` около 0.5, анализ проваливается, Rollout
 прерывается и остаётся на stable. Статус Rollout — `Degraded`, пока в git не вернут хорошую
 версию: Argo CD не откатывает git, он показывает, что желаемое состояние не выкатилось.
+На стенде (2026-11-20) так и было: `error-rate-diff` 0.6 два измерения подряд, abort через
+3 минуты после начала выкатки, все запросы снова на stable.
 
 ## LLM gateway и Langfuse
 
