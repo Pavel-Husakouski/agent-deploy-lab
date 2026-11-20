@@ -3,7 +3,7 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Готовы этапы 1–7, 10 и 11, следующий — этап 8 (review и runbook).
+Готовы этапы 1–8, 10 и 11, остался опциональный этап 9 (Terraform в облаке).
 
 - **Этапы 1–5:** API + CLI + DeepSeek + Redis, release manifest с проверкой, Dockerfile,
   метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально через
@@ -15,6 +15,9 @@ canary, rollback, IaC, code review. Подробности и план этап�
 - **Этап 7:** откат релиза, который уже записал state: история в формате v2 читается
   предыдущим релизом, аварийный откат тегом без canary, обратная миграция для отката дальше
   окна совместимости (см. [Откат](#откат)).
+- **Этап 8:** PR template с чеклистом промпта и отката, CODEOWNERS, отчёт eval комментарием в
+  PR, повторы упавших eval-тестов вместо ручного перезапуска и [RUNBOOK.md](RUNBOOK.md),
+  пройденный на стенде (см. [Review](#review)).
 - **Этап 10:** в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и бюджетом, а
   каждый вызов виден трейсом в self-hosted Langfuse
   (см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
@@ -171,6 +174,8 @@ kubectl --context kind-llm-platform -n agent describe analysisrun <name>   # з�
 
 ## Откат
 
+Пошаговые действия при инциденте — в [RUNBOOK.md](RUNBOOK.md). Здесь — как устроен откат.
+
 Откат агента — это откат manifest целиком и совместимость state, а не revert кода. Промпт,
 модель и параметры зашиты в образ вместе с `release.json`, поэтому прошлый тег образа — это
 прошлый manifest. Но история в Redis общая для всех версий: её успевает записать и новая
@@ -221,9 +226,9 @@ npm run migrate:history -- --url redis://localhost:16379 --dry-run
 npm run migrate:history -- --url redis://localhost:16379
 ```
 
-Порядок, если откат уходит за окно: сначала откат тегом, потом миграция. В обратном порядке
-ещё работающая новая версия успеет дописать v2. Миграция возвращает данные, но не ответы,
-которые старая версия успела дать без истории: они остаются в сессии.
+Если откат уходит за окно, сначала откат тегом, потом миграция, см.
+[runbook, сценарий 3](RUNBOOK.md#3-откат-за-окно-совместимости-истории). Миграция возвращает
+данные, но не ответы, которые старая версия успела дать без истории.
 
 **Проверено на стенде (2026-11-20):**
 
@@ -640,6 +645,7 @@ curl -s localhost:13000/metrics | grep ^agent_
 src/config.ts          конфигурация из env (zod)
 src/release.ts         схема release.json, загрузка промпта и проверка sha256
 src/manifest-check.ts  правила check:manifest (чистая функция)
+src/eval-gate.ts       повторы упавших eval-тестов и отчёт eval gate (чистые функции)
 src/metrics.ts         метрики prom-client
 src/prompt.ts          формат роли, сборка system prompt и сообщений для LLM
 src/llm.ts             интерфейс LlmClient и клиент OpenAI-совместимого API (streaming, usage,
@@ -659,6 +665,8 @@ scripts/               check-manifest.ts, eval.ts (eval gate), load.ts (нагр
                        migrate-history.ts (обратная миграция истории)
 evals/                 promptfoo: provider.ts, наборы <evalDataset>/*.yaml
 .github/workflows/     CI и аварийный откат (rollback.yml)
+.github/               PR template и CODEOWNERS
+RUNBOOK.md             действия при инциденте: canary abort, откат, eval gate, LLM
 prompts/               system prompts, выпущенные файлы не меняются
 release.json           release manifest
 Dockerfile             multi-stage сборка образа API
