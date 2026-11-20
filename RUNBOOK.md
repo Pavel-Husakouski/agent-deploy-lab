@@ -11,7 +11,10 @@
 выполняются из корня репо.
 
 ```bash
+make -C ../llm-platform tools           # плагин kubectl-argo-rollouts версии контроллера, один раз
 alias k='kubectl --context kind-llm-platform -n agent'
+# у плагина флаги идут после имени: kubectl --context ... argo rollouts не работает
+alias kar='kubectl argo rollouts --context kind-llm-platform -n agent'
 # итог AnalysisRun по метрикам, используется в сценарии 1
 AR='{range .status.metricResults[*]}{.name}: {.phase} {.measurements[*].value}{.message}{"\n"}{end}'
 make -C ../llm-platform status          # адреса Argo CD, Prometheus, Langfuse, LiteLLM
@@ -30,7 +33,7 @@ make -C ../llm-platform argocd-password # пароль admin в UI Argo CD
 
 ```bash
 curl -s localhost:13000/healthz                     # release, который отвечает
-k get rollout agent                                 # реплики; статус — в UI или ниже
+kar get rollout agent                               # шаги, ревизии, поды, AnalysisRun
 k get rollout agent -o jsonpath='{.status.phase} {.status.message}{"\n"}'
 k get rs -o wide                                    # ReplicaSet → образ, у какого реплики
 k get analysisrun --sort-by=.metadata.creationTimestamp | tail -3
@@ -48,10 +51,28 @@ git fetch -q && git log --oneline -5 origin/main -- deploy/agent/kustomization.y
     argocd.argoproj.io/refresh=normal --overwrite
   ```
 
-**Чего не делать.** `kubectl argo rollouts undo`, `kubectl patch` или `kubectl edit` Rollout:
-у Application включён `selfHeal`, Argo CD вернёт состояние из git за секунды. Состояние
-выкатки меняется только через git: merge, `rollback.yml`. Исключение — действия Rollout
-(`promote-full`, `retry`, `abort`) в UI Argo CD: они меняют статус, а не spec.
+**Действия над идущей выкаткой.** Меняют статус Rollout, а не spec, поэтому `selfHeal` их не
+откатывает:
+
+| Когда                                         | Плагин                    | UI Argo CD     |
+|-----------------------------------------------|---------------------------|----------------|
+| пауза `InconclusiveAnalysisRun`, причина ясна | `kar promote agent`       | `promote-full` |
+| abort после Error анализа (не было нагрузки)  | `kar retry rollout agent` | `retry`        |
+| остановить выкатку вручную                    | `kar abort agent`         | `abort`        |
+
+- Promote после `Inconclusive` не пропускает анализ: контроллер запускает новый AnalysisRun
+  (`<имя>.1`), поэтому нагрузка должна идти. Без плагина и UI тот же promote — патч status:
+
+  ```bash
+  k patch rollout agent --subresource=status --type=merge \
+    -p '{"status":{"pauseConditions":null}}'
+  ```
+
+- Перед promote убрать причину паузы: нет нагрузки, исчерпан бюджет LLM (сценарий 5).
+
+**Чего не делать.** `kubectl argo rollouts undo`, `kubectl patch` или `kubectl edit` spec
+Rollout: у Application включён `selfHeal`, Argo CD вернёт состояние из git за секунды. Образ и
+шаблон пода меняются только через git: merge, `rollback.yml`.
 
 ## 1. Canary прервался по анализу
 
@@ -254,7 +275,9 @@ xdg-open reports-ci/injection.html
 ## 5. Ответы с ошибкой LLM
 
 **Симптомы.** CLI получает `event: error`, растёт `agent_chat_requests_total{status="error"}`
-у всех версий сразу, а не только у canary.
+у всех версий сразу, а не только у canary. Идущая выкатка встаёт на паузу
+`InconclusiveAnalysisRun`: canary и stable падают одинаково, сравнивать нечего. Так было
+2026-11-20 при исчерпанном бюджете: после его подъёма — promote, см. раздел 0.
 
 **Диагностика.**
 
