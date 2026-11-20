@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
-import { makeRecord, type HistoryStore } from '../history.js';
+import { makeRecordV2, type HistoryStore } from '../history.js';
 import type { ScoreSink } from '../langfuse.js';
 import type { LlmClient, LlmTrace } from '../llm.js';
 import { createMetrics, type Metrics } from '../metrics.js';
 import { buildMessages, IdSchema, RoleSchema, userText } from '../prompt.js';
 import type { Release } from '../release.js';
-import { renderReview, requestReview } from '../review.js';
+import { renderReview, requestReview, type Review } from '../review.js';
 
 export interface AppDeps {
   llm: LlmClient;
@@ -106,7 +106,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
 
     const messages = buildMessages(promptTemplate, role, turn, history, asked);
-    const userRecord = makeRecord('user', userText(turn));
+    const meta = { mode, release: manifest.version };
+    const userRecord = makeRecordV2('user', meta, { content: userText(turn) });
     const trace: LlmTrace = {
       traceId: randomBytes(16).toString('hex'),
       sessionId,
@@ -143,6 +144,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     let firstDelta = true;
     let status: 'ok' | 'error' | 'aborted' = 'ok';
     let answer = '';
+    let review: Review | undefined;
     // Один вызов LLM: onDelta получает фрагменты по мере прихода, результат — весь текст.
     const generate = async (onDelta: (text: string) => void, json = false): Promise<string> => {
       let text = '';
@@ -171,9 +173,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       // Падает как ошибка LLM (status=error, event: error), но без вызова и его стоимости.
       if (faultErrorRate > 0 && random() < faultErrorRate) throw new Error(FAULT_MESSAGE);
       if (mode === 'answer') {
-        // Разбор приходит JSON: клиенту он уходит одним событием после проверки схемы, а в
-        // историю пишется markdown, чтобы discuss видел разбор как текст.
-        const review = await requestReview(
+        // Разбор приходит JSON: клиенту он уходит одним событием после проверки схемы, в
+        // историю пишется объектом (v2), а discuss видит его markdown после чтения.
+        review = await requestReview(
           () => generate(() => {}, true),
           (text, reason) => {
             metrics.invalidOutput.inc();
@@ -199,7 +201,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         answer = await generate((text) => raw.write(sseEvent({ delta: text })));
       }
       // Обе реплики сохраняются только после успешного завершения стрима.
-      await deps.store.append(sessionId, [userRecord, makeRecord('assistant', answer)]);
+      const assistantRecord = makeRecordV2(
+        'assistant',
+        meta,
+        review ? { review } : { content: answer },
+      );
+      await deps.store.append(sessionId, [userRecord, assistantRecord]);
       if (clientId) {
         // Вопрос уже показан: сбой записи не должен ломать тренировку, худшее — один повтор.
         await deps.store.addAsked(clientId, role, answer).catch((err: unknown) => {

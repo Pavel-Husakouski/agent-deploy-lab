@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, FAULT_MESSAGE } from '../src/api/server.js';
 import type { HistoryRecord, HistoryStore } from '../src/history.js';
-import { makeRecord } from '../src/history.js';
+import {
+  makeRecord,
+  parseRecord,
+  serializeRecord,
+  type StoredRecord,
+} from '../src/history.js';
 import type { Score, ScoreSink } from '../src/langfuse.js';
 import type {
   ChatMessage,
@@ -16,18 +21,28 @@ import { buildSystemPrompt, formatAsked, QUESTION_REQUEST } from '../src/prompt.
 import type { Release } from '../src/release.js';
 import { renderReview, type Review } from '../src/review.js';
 
+// Хранит строки и читает их через parseRecord, как RedisHistoryStore: запись v2 приходит
+// обратно в v1.
 class MemoryStore implements HistoryStore {
-  data = new Map<string, HistoryRecord[]>();
+  data = new Map<string, string[]>();
   healthy = true;
   asked = new Map<string, string[]>();
   askedFails = false;
   addAskedFails = false;
 
   async read(sessionId: string): Promise<HistoryRecord[]> {
-    return [...(this.data.get(sessionId) ?? [])];
+    return (this.data.get(sessionId) ?? [])
+      .map(parseRecord)
+      .filter((r): r is HistoryRecord => r !== null);
   }
-  async append(sessionId: string, records: HistoryRecord[]): Promise<void> {
-    this.data.set(sessionId, [...(this.data.get(sessionId) ?? []), ...records]);
+  async append(sessionId: string, records: StoredRecord[]): Promise<void> {
+    this.data.set(sessionId, [
+      ...(this.data.get(sessionId) ?? []),
+      ...records.map(serializeRecord),
+    ]);
+  }
+  raw(sessionId: string): unknown[] {
+    return (this.data.get(sessionId) ?? []).map((r) => JSON.parse(r) as unknown);
   }
   async readAsked(clientId: string, role: string): Promise<string[]> {
     if (this.askedFails) throw new Error('Redis упал');
@@ -243,7 +258,7 @@ describe('POST /chat, разбор в режиме answer', () => {
     return { events: parseSse(res.body), store: s };
   };
 
-  it('просит JSON mode, отдаёт разбор одним событием и пишет markdown в историю', async () => {
+  it('просит JSON mode, отдаёт разбор одним событием и пишет его объектом в историю', async () => {
     const llm = new FakeLlm(REVIEW_CHUNKS);
 
     const { events, store } = await answer(llm);
@@ -253,6 +268,8 @@ describe('POST /chat, разбор в режиме answer', () => {
       { event: 'review', data: REVIEW },
       { event: 'done', data: {} },
     ]);
+    expect(store.raw('s1').at(-1)).toMatchObject({ schemaVersion: 2, review: REVIEW });
+    expect(store.raw('s1').at(-1)).not.toHaveProperty('content');
     expect((await store.read('s1')).at(-1)?.content).toBe(renderReview(REVIEW));
   });
 
@@ -408,7 +425,10 @@ describe('POST /chat', () => {
       ['user', QUESTION_REQUEST],
       ['assistant', 'Вопрос'],
     ]);
-    expect(saved.every((r) => r.schemaVersion === 1)).toBe(true);
+    expect(store.raw('s1')).toMatchObject([
+      { schemaVersion: 2, role: 'user', mode: 'question', release: '1.2.0' },
+      { schemaVersion: 2, role: 'assistant', mode: 'question', release: '1.2.0' },
+    ]);
   });
 
   it.each(['clarify', 'answer', 'discuss'])('%s: передаёт в LLM режим, историю и сообщение', async (mode) => {
