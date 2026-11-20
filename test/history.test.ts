@@ -4,8 +4,12 @@ import {
   ASKED_TTL_SECONDS,
   HISTORY_TTL_SECONDS,
   RedisHistoryStore,
+  downgradeRecord,
   makeRecord,
   parseRecord,
+  parseStoredRecord,
+  toV1,
+  type HistoryRecordV2,
   serializeRecord,
   sessionKey,
   type RedisLike,
@@ -66,10 +70,70 @@ describe('формат записей истории', () => {
     const record = makeRecord('assistant', 'ответ');
     expect(parseRecord(serializeRecord(record))).toEqual(record);
     expect(parseRecord('не json')).toBeNull();
-    expect(parseRecord(JSON.stringify({ ...record, schemaVersion: 2 }))).toBeNull();
+    expect(parseRecord(JSON.stringify({ ...record, schemaVersion: 3 }))).toBeNull();
     expect(parseRecord(JSON.stringify({ ...record, role: 'system' }))).toBeNull();
   });
+});
 
+describe('чтение записей v2 (совместимость с откатом)', () => {
+  const ts = '2026-11-20T12:00:00.000Z';
+  const review = {
+    kind: 'review' as const,
+    score: 7,
+    reason: 'по делу',
+    good: 'назвал canary',
+    missing: ['rollback state'],
+    reference: ['повторный деплой manifest'],
+  };
+  const v2 = (extra: Partial<HistoryRecordV2>): HistoryRecordV2 => ({
+    schemaVersion: 2,
+    role: 'assistant',
+    mode: 'answer',
+    release: '0.12.0',
+    ts,
+    ...extra,
+  });
+
+  it('текстовая запись v2 приводится к v1 без поля mode и release', () => {
+    const raw = JSON.stringify(v2({ role: 'user', mode: 'clarify', content: 'уточни' }));
+    expect(parseRecord(raw)).toEqual({ schemaVersion: 1, role: 'user', content: 'уточни', ts });
+  });
+
+  it('разбор v2 хранится объектом, при чтении становится markdown как в v1', () => {
+    const raw = JSON.stringify(v2({ review }));
+    const record = parseRecord(raw);
+    expect(record?.schemaVersion).toBe(1);
+    expect(record?.content).toContain('**Оценка:** 7/10, по делу');
+    expect(record?.content).toContain('- повторный деплой manifest');
+    expect(toV1(v2({ review: { kind: 'redirect', text: 'вернёмся к вопросу' } })).content).toBe(
+      'вернёмся к вопросу',
+    );
+  });
+
+  it('v2 без content и review или с обоими не читается', () => {
+    expect(parseStoredRecord(JSON.stringify(v2({})))).toEqual({ skipped: 'invalid' });
+    expect(parseStoredRecord(JSON.stringify(v2({ content: 'x', review })))).toEqual({
+      skipped: 'invalid',
+    });
+  });
+
+  it('неизвестная версия пропускается с номером версии, битая запись — как invalid', () => {
+    expect(parseStoredRecord(JSON.stringify({ schemaVersion: 3, role: 'user' }))).toEqual({
+      skipped: '3',
+    });
+    expect(parseStoredRecord('{битая')).toEqual({ skipped: 'invalid' });
+  });
+
+  it('downgradeRecord переводит v2 в v1, остальное не трогает', () => {
+    const raw = JSON.stringify(v2({ review }));
+    expect(JSON.parse(downgradeRecord(raw)!)).toEqual(parseRecord(raw));
+    expect(downgradeRecord(serializeRecord(makeRecord('user', 'q')))).toBeNull();
+    expect(downgradeRecord(JSON.stringify({ schemaVersion: 3 }))).toBeNull();
+    expect(downgradeRecord('{битая')).toBeNull();
+  });
+});
+
+describe('ключи', () => {
   it('ключ сессии имеет вид session:{id}', () => {
     expect(sessionKey('abc')).toBe('session:abc');
   });
@@ -89,12 +153,36 @@ describe('RedisHistoryStore', () => {
     expect(await store.read('s1')).toEqual(records);
   });
 
-  it('пропускает битые записи при чтении', async () => {
+  it('пропускает битые записи при чтении и сообщает о каждой', async () => {
     const { redis, lists } = fakeRedis();
     const good = makeRecord('user', 'q');
-    lists.set('session:s1', ['{битая', serializeRecord(good)]);
+    const future = JSON.stringify({ schemaVersion: 3, role: 'assistant', parts: [] });
+    lists.set('session:s1', ['{битая', serializeRecord(good), future]);
+    const skipped: string[] = [];
 
-    expect(await new RedisHistoryStore(redis).read('s1')).toEqual([good]);
+    const store = new RedisHistoryStore(redis, undefined, (v) => skipped.push(v));
+    expect(await store.read('s1')).toEqual([good]);
+    expect(skipped).toEqual(['invalid', '3']);
+  });
+
+  it('читает сессию, в которую писали и v1, и v2', async () => {
+    const { redis, lists } = fakeRedis();
+    const question = makeRecord('assistant', 'Что такое canary?');
+    const answer = JSON.stringify({
+      schemaVersion: 2,
+      role: 'user',
+      mode: 'answer',
+      release: '0.12.0',
+      content: 'часть трафика',
+      ts: question.ts,
+    });
+    lists.set('session:s1', [serializeRecord(question), answer]);
+
+    const records = await new RedisHistoryStore(redis).read('s1');
+    expect(records.map((r) => [r.schemaVersion, r.role, r.content])).toEqual([
+      [1, 'assistant', 'Что такое canary?'],
+      [1, 'user', 'часть трафика'],
+    ]);
   });
 
   it('хранит только последние вопросы клиента по роли, с TTL', async () => {

@@ -15,7 +15,8 @@
     "dev": "tsx watch src/api/main.ts",
     "start": "tsx src/api/main.ts",
     "cli": "tsx src/cli/main.ts",
-    "load": "tsx scripts/load.ts"
+    "load": "tsx scripts/load.ts",
+    "migrate:history": "tsx scripts/migrate-history.ts"
   },
   "dependencies": {
     "fastify": "^5.12.7",

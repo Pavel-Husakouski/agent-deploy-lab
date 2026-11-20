@@ -1,0 +1,64 @@
+# Аварийный откат: в deploy/ коммитится тег уже собранного образа, Argo CD выкатывает его, а
+# rollbackWindow в Rollout пропускает canary для недавней ревизии. Код в main не меняется:
+# следующий merge снова выкатит HEAD, поэтому после отката нужен revert или fix-forward PR.
+# Запуск: gh workflow run rollback.yml -f tag=0.11.0-abc1234
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: тег образа в GHCR, например 0.11.0-abc1234
+        required: true
+
+permissions:
+  contents: read
+
+# Та же группа, что у ci на main: идущий release отменяется и не перезапишет откат своим тегом.
+concurrency:
+  group: ci-refs/heads/main
+  cancel-in-progress: true
+
+jobs:
+  rollback:
+    name: rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # DEPLOY_KEY доступен только окружению release, а оно — только ветке main.
+    environment: release
+    env:
+      IMAGE: ghcr.io/pavel-husakouski/agent-deploy-lab
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: tag format
+        run: |
+          [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{7}$ ]] \
+            || { echo "ожидается тег вида 1.2.3-abc1234: $TAG" >&2; exit 1; }
+
+      # Пакет public: манифест образа читается без логина. Нет образа — нет отката.
+      - name: image exists
+        run: docker buildx imagetools inspect "$IMAGE:$TAG" > /dev/null
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      # [skip ci]: иначе push запустит ci, и release вернёт тег HEAD.
+      - name: commit tag to deploy/
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          yq -i '.images[0].newName = strenv(IMAGE) | .images[0].newTag = strenv(TAG)' \
+            deploy/agent/kustomization.yaml
+          if git diff --quiet; then
+            echo "тег $TAG уже в deploy/"
+            exit 0
+          fi
+          git commit -am "chore(deploy): rollback agent to $TAG [skip ci]"
+          for attempt in 1 2 3; do
+            git push origin main && exit 0
+            sleep $((attempt * 5))
+            git pull --rebase origin main
+          done
+          exit 1

@@ -15,6 +15,7 @@ export interface Metrics {
   truncated: Counter;
   invalidOutput: Counter;
   reviewScore: Histogram;
+  historySkipped: Counter<'schema_version'>;
   recordUsage(usage: TokenUsage, mode: ChatMode): void;
 }
 
@@ -100,6 +101,13 @@ export function createMetrics(
     registers: [registry],
   });
 
+  const historySkipped = new Counter({
+    name: 'agent_history_records_skipped_total',
+    help: 'Записи истории, которые API не смог прочитать: чужая schemaVersion или битый JSON',
+    labelNames: ['schema_version'] as const,
+    registers: [registry],
+  });
+
   return {
     registry,
     requests,
@@ -110,6 +118,7 @@ export function createMetrics(
     truncated,
     invalidOutput,
     reviewScore,
+    historySkipped,
     recordUsage(usage, mode) {
       tokens.inc({ type: 'prompt', mode }, usage.promptTokens);
       tokens.inc({ type: 'completion', mode }, usage.completionTokens);
