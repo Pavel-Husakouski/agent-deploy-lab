@@ -1,10 +1,11 @@
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
-import { renderReview, ReviewSchema } from './review.js';
+import { renderReview, ReviewSchema, type Review } from './review.js';
 
-// Версия, в которой API пишет записи. Читает он текущую и следующую (v2): так откат на эту
-// версию не теряет историю, которую успела записать новая (expand → contract).
-export const HISTORY_SCHEMA_VERSION = 1;
+// Версия, в которой API пишет записи. Читает он v1 и v2: на 0.11.0, которая тоже читает обе,
+// откат проходит без потери истории. Чтение v1 убирается не раньше, чем истечёт TTL последних
+// записей v1 и откат на 0.11.0 перестанет быть нужным (expand → contract).
+export const HISTORY_SCHEMA_VERSION = 2;
 export const HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60;
 // Сколько последних вопросов и как долго клиент не должен получать повторно.
 export const ASKED_LIMIT = 20;
@@ -12,7 +13,7 @@ export const ASKED_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 const RoleSchema = z.enum(['user', 'assistant']);
 
-// Формат v1: в нём API пишет и к нему приводит записи v2 при чтении.
+// Формат v1: к нему приводятся записи при чтении, его читают все релизы.
 export const HistoryRecordSchema = z.object({
   schemaVersion: z.literal(1),
   role: RoleSchema,
@@ -39,6 +40,7 @@ export const HistoryRecordV2Schema = z
   });
 
 export type HistoryRecordV2 = z.infer<typeof HistoryRecordV2Schema>;
+export type StoredRecord = HistoryRecord | HistoryRecordV2;
 
 // Обратное преобразование v2 → v1: им пользуются чтение и scripts/migrate-history.ts.
 export function toV1(record: HistoryRecordV2): HistoryRecord {
@@ -48,7 +50,8 @@ export function toV1(record: HistoryRecordV2): HistoryRecord {
 
 export interface HistoryStore {
   read(sessionId: string): Promise<HistoryRecord[]>;
-  append(sessionId: string, records: HistoryRecord[]): Promise<void>;
+  // Пишется любой поддерживаемый формат, читается всегда v1.
+  append(sessionId: string, records: StoredRecord[]): Promise<void>;
   readAsked(clientId: string, role: string): Promise<string[]>;
   addAsked(clientId: string, role: string, question: string): Promise<void>;
   ping(): Promise<boolean>;
@@ -63,15 +66,32 @@ export function askedKey(clientId: string, role: string): string {
   return `asked:${clientId}:${role.toLowerCase()}`;
 }
 
+// Запись v1: так писали релизы до 0.12.0, в тестах — история, записанная ими.
 export function makeRecord(
   role: HistoryRecord['role'],
   content: string,
   now: Date = new Date(),
 ): HistoryRecord {
-  return { schemaVersion: HISTORY_SCHEMA_VERSION, role, content, ts: now.toISOString() };
+  return { schemaVersion: 1, role, content, ts: now.toISOString() };
 }
 
-export function serializeRecord(record: HistoryRecord): string {
+// Запись v2: режим хода и релиз; разбор хранится объектом, остальное текстом.
+export function makeRecordV2(
+  role: HistoryRecordV2['role'],
+  meta: { mode: HistoryRecordV2['mode']; release: string },
+  body: { content: string } | { review: Review },
+  now: Date = new Date(),
+): HistoryRecordV2 {
+  return {
+    schemaVersion: HISTORY_SCHEMA_VERSION,
+    role,
+    ...meta,
+    ...body,
+    ts: now.toISOString(),
+  };
+}
+
+export function serializeRecord(record: StoredRecord): string {
   return JSON.stringify(record);
 }
 
@@ -137,7 +157,7 @@ export class RedisHistoryStore implements HistoryStore {
     return records;
   }
 
-  async append(sessionId: string, records: HistoryRecord[]): Promise<void> {
+  async append(sessionId: string, records: StoredRecord[]): Promise<void> {
     if (records.length === 0) return;
     const key = sessionKey(sessionId);
     // RPUSH и EXPIRE в одной транзакции: TTL продлевается при каждой записи.
