@@ -9,6 +9,10 @@ spec:
   # Без ingress-контроллера трафик делится числом подов: 2 реплики дают шаг 50%.
   replicas: 2
   revisionHistoryLimit: 3
+  # Возврат на одну из двух последних ревизий (откат тегом через rollback.yml) идёт сразу, без
+  # canary-шага и анализа: эти версии уже работали, а откат не должен ждать 5 минут и нагрузку.
+  rollbackWindow:
+    revisions: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: agent

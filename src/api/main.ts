@@ -14,6 +14,12 @@ const release = await loadRelease();
 const { model } = release.manifest;
 
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
+const metrics = createMetrics(release.manifest, { collectDefault: true });
+// Пропуск записей считается в метрике; лог — через app.log, который появится ниже.
+const store = new RedisHistoryStore(redis, undefined, (schemaVersion) => {
+  metrics.historySkipped.inc({ schema_version: schemaVersion });
+  app.log.warn({ schemaVersion }, 'запись истории пропущена: формат не поддерживается');
+});
 
 const app = buildApp({
   llm: createLlmClient({
@@ -24,9 +30,9 @@ const app = buildApp({
     maxTokens: model.maxTokens,
     sendMetadata: config.LLM_METADATA,
   }),
-  store: new RedisHistoryStore(redis),
+  store,
   release,
-  metrics: createMetrics(release.manifest, { collectDefault: true }),
+  metrics,
   ...(config.LANGFUSE_HOST &&
     config.LANGFUSE_PUBLIC_KEY &&
     config.LANGFUSE_SECRET_KEY && {
