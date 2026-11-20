@@ -28,7 +28,9 @@ async function one(): Promise<Outcome> {
   try {
     const res = await fetch(`${values.url}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      // Новое соединение на каждый запрос: kube-proxy делит соединения, а не запросы, и с
+      // keep-alive нагрузка прилипает к уже открытым соединениям со stable-подом.
+      headers: { 'content-type': 'application/json', connection: 'close' },
       body: JSON.stringify({ sessionId: randomUUID(), role: values.role, mode: 'question' }),
       signal: AbortSignal.timeout(120_000),
     });
