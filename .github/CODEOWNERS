@@ -1,0 +1,20 @@
+# Владельцы файлов, которые меняют поведение релиза. GitHub назначает их ревьюерами PR.
+# Review не обязателен по ruleset: владелец один, а свой PR одобрить нельзя (см. SPEC, Решения).
+# Промпт, модель и параметры релиза: смотреть diff промпта и отчёт eval в PR.
+/prompts/                  @Pavel-Husakouski
+/release.json              @Pavel-Husakouski
+
+# Eval gate: dataset и пороги решают, что пустить в main.
+/evals/                    @Pavel-Husakouski
+/scripts/eval.ts           @Pavel-Husakouski
+/src/eval-gate.ts          @Pavel-Husakouski
+/src/manifest-check.ts     @Pavel-Husakouski
+
+# Формат state: изменение без expand → contract ломает откат.
+/src/history.ts            @Pavel-Husakouski
+/scripts/migrate-history.ts @Pavel-Husakouski
+
+# Выкатка, анализ canary, CI и откат.
+/deploy/                   @Pavel-Husakouski
+/.github/                  @Pavel-Husakouski
+/RUNBOOK.md                @Pavel-Husakouski

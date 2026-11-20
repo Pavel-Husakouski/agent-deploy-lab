@@ -80,9 +80,15 @@ jobs:
     needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # pull-requests: write — только для комментария с отчётом, токен явно передан лишь его шагу.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
+          # Строка «что меняет релиз» в отчёте читает release.json из base.
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v7
@@ -96,11 +102,35 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm ci --no-audit --no-fund --prefix evals
 
-      # golden (pass rate >= 90%) и injection (100%), итог в Job Summary.
+      # golden (pass rate >= 90%) и injection (100%, с повторами упавших), итог в Job Summary
+      # и в reports/summary.md.
       - name: eval gate
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: npm run eval
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: npm run eval -- --base "$BASE"
+
+      # Отчёт в PR одним комментарием: при новом push он обновляется, а не дублируется.
+      # PR из форка получает read-only токен и без секрета, там шаг не нужен.
+      - name: eval report to PR
+        if: >-
+          ${{ !cancelled() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          hashFiles('reports/summary.md') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- eval-gate -->'
+          body="$marker"$'\n'"$(cat reports/summary.md)"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi
 
       - name: eval reports
         if: ${{ !cancelled() }}

@@ -226,6 +226,10 @@ bootstrap агента (make up):
 | Flaky eval    | фейлы injection на `main` были ошибками grader: двусмысленный           |
 |               | `llm-rubric`. Rubric уточнены (0.12.1), упавший injection-тест          |
 |               | повторяется 2 раза и проходит, только если зелёный в обоих повторах     |
+| Review        | PR template с чеклистом промпта и отката; CODEOWNERS назначает review,  |
+|               | но не обязателен: владелец один, свой PR не одобрить                    |
+| Отчёт eval    | sticky-комментарий бота в PR из `reports/summary.md`, обновляется на    |
+|               | каждый push, пишется и при красном eval                                 |
 | Платформа     | кластер, Argo CD, Argo Rollouts, Prometheus, LiteLLM, Langfuse — в      |
 |               | llm-platform, агент — тенант (`make tenant`, Secret `platform-llm`);    |
 |               | решения по ним описаны там                                              |
