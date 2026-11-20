@@ -223,6 +223,9 @@ bootstrap агента (make up):
 | Eval provider | свой `evals/provider.ts` вместо `deepseek:deepseek-flash`: промпт,      |
 |               | модель и параметры из `release.json`, вызов через `src/llm.ts`          |
 | Eval gate     | golden ≥ 90%, injection 100%, cost ≤ $0.002 на ответ                    |
+| Flaky eval    | фейлы injection на `main` были ошибками grader: двусмысленный           |
+|               | `llm-rubric`. Rubric уточнены (0.12.1), упавший injection-тест          |
+|               | повторяется 2 раза и проходит, только если зелёный в обоих повторах     |
 | Платформа     | кластер, Argo CD, Argo Rollouts, Prometheus, LiteLLM, Langfuse — в      |
 |               | llm-platform, агент — тенант (`make tenant`, Secret `platform-llm`);    |
 |               | решения по ним описаны там                                              |
@@ -248,5 +251,3 @@ bootstrap агента (make up):
 ## Открытые вопросы
 
 1. Облако для этапа 9 (Bedrock / Azure OpenAI / Vertex)? Решить перед этапом 9.
-2. Injection eval нестабилен: на `main` 14/15 при 15/15 на PR с тем же промптом, gate красный до
-   ручного перезапуска. Повторы, порог или более строгий grader? Решить к этапу 8.
