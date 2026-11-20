@@ -102,7 +102,7 @@ export function createMetrics(
   });
 
   const historySkipped = new Counter({
-    name: 'agent_history_records_skipped_total',
+    name: 'agent_history_skipped_total',
     help: 'Записи истории, которые API не смог прочитать: чужая schemaVersion или битый JSON',
     labelNames: ['schema_version'] as const,
     registers: [registry],
