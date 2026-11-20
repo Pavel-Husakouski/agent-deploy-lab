@@ -3,7 +3,7 @@
 Тренировочный стенд для отработки доставки AI-агента в прод: версионирование, release checks,
 canary, rollback, IaC, code review. Подробности и план этапов в [SPEC.md](SPEC.md).
 
-Готовы этапы 1–7, 10 и 11, следующий — этап 8 (review и runbook).
+Готовы этапы 1–8, 10 и 11, остался опциональный этап 9 (Terraform в облаке).
 
 - **Этапы 1–5:** API + CLI + DeepSeek + Redis, release manifest с проверкой, Dockerfile,
   метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально через
@@ -15,6 +15,9 @@ canary, rollback, IaC, code review. Подробности и план этап�
 - **Этап 7:** откат релиза, который уже записал state: история в формате v2 читается
   предыдущим релизом, аварийный откат тегом без canary, обратная миграция для отката дальше
   окна совместимости (см. [Откат](#откат)).
+- **Этап 8:** PR template с чеклистом промпта и отката, CODEOWNERS, отчёт eval комментарием в
+  PR, повторы упавших eval-тестов вместо ручного перезапуска и [RUNBOOK.md](RUNBOOK.md),
+  пройденный на стенде (см. [Review](#review)).
 - **Этап 10:** в кластере агент ходит в LLM через LiteLLM Proxy с virtual key и бюджетом, а
   каждый вызов виден трейсом в self-hosted Langfuse
   (см. [LLM gateway и Langfuse](#llm-gateway-и-langfuse)).
