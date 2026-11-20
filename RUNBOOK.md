@@ -12,6 +12,8 @@
 
 ```bash
 alias k='kubectl --context kind-llm-platform -n agent'
+# итог AnalysisRun по метрикам, используется в сценарии 1
+AR='{range .status.metricResults[*]}{.name}: {.phase} {.measurements[*].value}{.message}{"\n"}{end}'
 make -C ../llm-platform status          # адреса Argo CD, Prometheus, Langfuse, LiteLLM
 make -C ../llm-platform argocd-password # пароль admin в UI Argo CD
 ```
@@ -63,7 +65,7 @@ canary получал около половины трафика минуты д
 
    ```bash
    k get analysisrun --sort-by=.metadata.creationTimestamp | tail -1
-   k describe analysisrun <имя> | grep -E 'Name:|Phase|Value'
+   k get analysisrun <имя> -o jsonpath="$AR"   # метрика: фаза, значения, ошибка
    ```
 
    | Метрика                  | Провал | Куда смотреть                                         |
@@ -229,7 +231,8 @@ xdg-open reports-ci/injection.html
 **Диагностика.**
 
 ```bash
-k logs -l app.kubernetes.io/name=agent --tail=100 | grep -iE 'error|budget|429|5[0-9]{2}'
+# warn (40) и error (50): «ошибка при генерации ответа» с текстом ошибки шлюза
+k logs -l app.kubernetes.io/name=agent --tail=500 | grep -E '"level":(40|50)' | tail -20
 kubectl --context kind-llm-platform -n argocd get application litellm langfuse
 kubectl --context kind-llm-platform -n llm get pods
 ```
@@ -257,7 +260,7 @@ make tenant && k delete pod -l app.kubernetes.io/name=agent
 
 ```bash
 kubectl --context kind-llm-platform -n langfuse get pods
-k logs -l app.kubernetes.io/name=agent --tail=200 | grep -i langfuse
+k logs -l app.kubernetes.io/name=agent --tail=500 | grep 'score в Langfuse'
 ```
 
 Trace пишет LiteLLM, а не агент, поэтому при живом Langfuse смотреть логи LiteLLM в
