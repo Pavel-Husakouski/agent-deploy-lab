@@ -57,7 +57,12 @@ git fetch -q && git log --oneline -5 origin/main -- deploy/agent/kustomization.y
 
 **Симптомы.** Application `agent` в Argo CD — Synced, но Degraded. У Rollout фаза `Degraded`,
 в сообщении `RolloutAborted`. Последний AnalysisRun — `Failed`. Пользователи затронуты мало:
-canary получал около половины трафика минуты две-три, потом весь трафик вернулся на stable.
+canary получал около половины трафика минуты две-три. Через полминуты после abort canary-под
+удаляется, stable снова 2/2.
+
+AnalysisRun в фазе `Successful` с сообщением `Run Terminated` — не одобрение: эту ревизию
+сменила следующая, не дождавшись анализа. Так бывает, если PR меняет `deploy/`: Argo CD сначала
+синхронизирует merge-коммит со старым образом, а через пару минут — коммит тега от `release`.
 
 **Диагностика.**
 
@@ -74,21 +79,37 @@ canary получал около половины трафика минуты д
    | `p95-latency-ratio`      | > 2    | `agent_chat_duration_seconds`, ответ длиннее, модель  |
    | `cost-per-request-ratio` | > 1.5  | `agent_llm_cost_usd_total`, токены, `maxTokens`       |
 
-2. Что именно сломалось. Canary-под после abort удалён, поэтому смотреть Prometheus по
-   метке `release` и Langfuse по тегу `release:<новая версия>`:
+2. Что именно сломалось. Canary-под после abort удалён, поэтому смотреть Prometheus по хэшу
+   шаблона пода (хэш canary — в имени AnalysisRun, `agent-<хэш>-<ревизия>`) и Langfuse по
+   тегу `release:<версия>`. Метка `release` не поможет, если версия не менялась:
 
    ```promql
-   sum by (release, status) (rate(agent_chat_requests_total[10m]))
+   sum by (rollouts_pod_template_hash, status) (rate(agent_chat_requests_total[10m]))
    ```
 
 3. Что поменял релиз: diff PR, который выкатывался, и комментарий eval в нём.
-   `git log --oneline -3 origin/main` — merge-коммит PR и коммит тега от бота.
+   `git log --oneline -3 origin/main` — merge-коммит PR и коммит тега от бота. Главный вопрос
+   для действия — менялся ли `deploy/`:
+
+   ```bash
+   git diff --stat <merge-коммит>^1 <merge-коммит> -- deploy/
+   ```
 
 **Действие.** Прод уже на stable, срочно откатывать нечего, но git и кластер расходятся:
-следующая синхронизация снова попробует плохой тег. Порядок:
+Rollout остаётся Degraded, пока git не вернут к рабочему состоянию. Как — зависит от того, где
+плохое изменение:
 
-1. Вернуть в git тег stable. Rollout сразу станет Healthy: желаемое совпало с stable, canary
-   не нужен.
+| PR менял                                  | Действие                                      |
+|-------------------------------------------|-----------------------------------------------|
+| только образ: код, промпт, `release.json` | шаг 1 (тег stable), затем шаг 2               |
+| `deploy/`: env, ресурсы, анализ           | **только шаг 2**, `rollback.yml` не запускать |
+
+`rollback.yml` меняет только тег образа. Если плохое изменение в `deploy/`, тег stable вместе с
+ним даёт шаблон, которого у stable нет. Если такой шаблон уже был ревизией в пределах
+`rollbackWindow`, Argo Rollouts выкатит его сразу на 100% без анализа: плохой релиз в проде.
+
+1. Вернуть в git тег stable. Шаблон совпадёт со stable, Rollout сразу станет Healthy без
+   canary.
 
    ```bash
    k get rs -o wide   # образ ReplicaSet с репликами, тег вида 0.12.0-b023859
@@ -97,17 +118,18 @@ canary получал около половины трафика минуты д
    gh run watch <id>
    ```
 
-2. Исправить код в `main` через PR (пока он не влит, следующий merge снова выкатит HEAD):
-   - **revert:** `git revert -m 1 <merge-коммит>` в новой ветке. `version` в `release.json`
-     после revert уменьшится, а `check:manifest` это запрещает: поднять до следующей версии.
-     Выпущенный промпт при этом не трогается, manifest просто снова ссылается на старый id;
+2. Исправить `main` через PR (пока он не влит, следующий merge снова выкатит HEAD):
+   - **revert:** `git revert -m 1 <merge-коммит>` в новой ветке. Если PR поднимал `version`,
+     после revert она уменьшится, а `check:manifest` это запрещает: поднять до следующей
+     версии. Выпущенный промпт не трогается, manifest снова ссылается на старый id;
    - **fix-forward:** исправление с новой версией, если причина понятна и чинится быстро.
+
+   Merge проходит canary с анализом: нужна нагрузка `npm run load`.
 
 **Проверка.** `k get rollout agent` — 2/2, фаза `Healthy`; `curl -s localhost:13000/healthz`
 отвечает версией stable; Application `agent` — Synced, Healthy.
 
-**Что после.** PR с revert или фиксом проходит обычный canary: на время выкатки нужна нагрузка
-`npm run load`. Если причина в отсутствии теста, добавить тест в golden или injection.
+**Что после.** Если причина в отсутствии теста, добавить тест в golden или injection.
 
 ## 2. Аварийный откат тегом
 
@@ -124,6 +146,12 @@ canary получал около половины трафика минуты д
    ```
 
    Тег должен быть собран (есть в GHCR) — это любой тег из истории `kustomization.yaml`.
+   `rollback.yml` откатывает только образ. Если после целевого тега менялся `deploy/`, эти
+   изменения останутся: сначала решить, нужен ли их revert (см. сценарий 1).
+
+   ```bash
+   git log --oneline <коммит тега>..origin/main -- deploy/ ':!deploy/agent/kustomization.yaml'
+   ```
 
 2. Совместима ли история в Redis. Целевая версия должна читать формат, который пишет текущая:
 
