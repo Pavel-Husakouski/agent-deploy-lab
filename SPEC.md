@@ -27,7 +27,7 @@
 - сломать промпт и увидеть, как его не пускает eval gate;
 - выкатить новую версию canary-релизом и посмотреть автооткат по метрикам;
 - откатить релиз, когда новая версия уже записала state;
-- поднять всю инфраструктуру с нуля одной командой `make up` (kind + Argo CD, остальное
+- поднять всю инфраструктуру с нуля одной командой `make up` (k3s + Argo CD, остальное
   по app-of-apps из git).
 
 **Не-цели:**
@@ -66,16 +66,17 @@
 ## Стенд
 
 **Выбран вариант A: kind (Kubernetes in Docker).** Нужен только Docker и бинарники `kind`,
-`kubectl`, `helm`, `make`. Ресурсы: примерно 4-6 GB RAM со всем стеком.
+`kubectl`, `helm`, `make`. Ресурсы: примерно 4-6 GB RAM со всем стеком. Позже платформа
+переехала на k3s на выделенном хосте `192.168.50.195`, см. ниже.
 
 Почему не Docker Compose: canary и автооткат там пришлось бы писать скриптами. Argo Rollouts
 и Argo CD дают те же механизмы, что в проде, и на интервью это весомее.
 
-С этапа 11 кластер kind, Argo CD, Argo Rollouts, Prometheus, LiteLLM и Langfuse живут в
+С этапа 11 кластер, Argo CD, Argo Rollouts, Prometheus, LiteLLM и Langfuse живут в
 отдельном репо [llm-platform](https://github.com/Pavel-Husakouski/llm-platform) и общие для
-нескольких проектов. agent-deploy-lab — тенант платформы: `make tenant` выдаёт ему virtual
-key LiteLLM и проект Langfuse, в своём `deploy/` остаются только agent и Redis. План переноса —
-[INFRA.md](INFRA.md).
+нескольких проектов. Кластер — k3s на хосте `192.168.50.195` (context `llm-platform`).
+agent-deploy-lab — тенант платформы: `make tenant` выдаёт ему virtual key LiteLLM и проект
+Langfuse, в своём `deploy/` остаются только agent и Redis. План переноса — [INFRA.md](INFRA.md).
 
 ## Архитектура
 
@@ -85,14 +86,14 @@ PR ──> GitHub Actions: typecheck, vitest, manifest check, promptfoo (golden,
                     ──> коммит нового тега в deploy/ (k8s-манифесты)
 
 llm-platform (make -C ../llm-platform up, отдельный репо):
-  kind create cluster ──> helm install argo-cd ──> root-app llm-platform
+  k3s на хосте ──> helm install argo-cd ──> root-app llm-platform
   ──> Applications: Argo Rollouts, Prometheus, LiteLLM, ClickHouse, Langfuse
 
 bootstrap агента (make up):
   проверка платформы ──> make tenant (virtual key, проект Langfuse, Secret platform-llm)
   ──> kubectl apply root-app.yaml (agent-deploy-lab) ──> Applications: Redis, agent
 
-локальный kind (кластер llm-platform):
+k3s на 192.168.50.195 (кластер llm-platform):
   Argo CD ──(pull)──> GitHub repo: видит новый тег в deploy/
           ──> Argo Rollouts: canary 50% → 100% (2 реплики)
                  └── AnalysisTemplate: Prometheus, canary против stable
@@ -115,7 +116,7 @@ bootstrap агента (make up):
 | Eval, red team      | promptfoo, provider `deepseek:deepseek-flash`, grader на DeepSeek  |
 | Образы              | Docker, GHCR                                                       |
 | CI                  | GitHub Actions                                                     |
-| Кластер             | kind, общий кластер llm-platform                                   |
+| Кластер             | k3s на выделенном хосте, общий кластер llm-platform                |
 | Bootstrap           | Makefile: проверка платформы, `make tenant`, root-app              |
 | IaC                 | Argo CD app-of-apps (`deploy/bootstrap/root-app.yaml`)             |
 | CD (GitOps)         | Argo CD                                                            |

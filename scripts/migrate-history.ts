@@ -5,7 +5,7 @@ import { downgradeRecord } from '../src/history.js';
 // Обратная миграция истории v2 → v1: нужна, если откат уходит на релиз, который не читает v2
 // (раньше 0.11.0). Записи v1 и записи другого формата не трогает, TTL ключа сохраняет.
 // В кластере Redis открывается через port-forward:
-//   kubectl --context kind-llm-platform -n agent port-forward svc/redis 16379:6379
+//   kubectl --context llm-platform -n agent port-forward svc/redis 16379:6379
 //   npm run migrate:history -- --url redis://localhost:16379 --dry-run
 const { values } = parseArgs({
   options: {

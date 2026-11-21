@@ -12,5 +12,5 @@ spec:
     - name: http
       port: 13000
       targetPort: http
-      # kind пробрасывает 30000 на localhost:13000
+      # API на IP хоста k3s: http://<HOST>:30000
       nodePort: 30000
