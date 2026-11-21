@@ -7,7 +7,7 @@ canary, rollback, IaC, code review. Подробности и план этап�
 
 - **Этапы 1–5:** API + CLI + DeepSeek + Redis, release manifest с проверкой, Dockerfile,
   метрики Prometheus, CI в GitHub Actions с eval gate на promptfoo. Запуск локально через
-  `docker compose` или в kind-кластере, куда Argo CD доставляет агента из git
+  `docker compose` или в Kubernetes-кластере платформы, куда Argo CD доставляет агента из git
   (см. [Кластер](#кластер)). Merge в `main` сам доезжает до кластера: CI пушит образ в GHCR и
   коммитит новый тег в `deploy/` (см. [Релиз](#релиз)).
 - **Этап 6:** новая версия выкатывается canary: половина трафика, анализ метрик canary против
@@ -74,21 +74,20 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 ## Кластер
 
 Тот же агент в Kubernetes, тенантом [llm-platform](https://github.com/Pavel-Husakouski/llm-platform):
-kind-кластер `llm-platform`, Argo CD, LiteLLM, Langfuse, Prometheus и Argo Rollouts живут
-там и общие для всех проектов. Этот репо кладёт в общий Argo CD свой root-app
+кластер `llm-platform` (k3s на хосте `192.168.50.195` или локальный kind), Argo CD, LiteLLM,
+Langfuse, Prometheus и Argo Rollouts живут там и общие для всех проектов. Этот репо кладёт в общий Argo CD свой root-app
 `agent-deploy-lab` (app-of-apps), остальное Argo CD синхронизирует из `deploy/` в git.
 
-Нужны `docker`, `kind`, `kubectl`, `make` и поднятая платформа (её требования — в README
-llm-platform). Порт 13000 на `127.0.0.1` пробрасывает кластер платформы, поэтому сначала
-`docker compose down`. Для управления выкаткой из терминала (`kubectl argo rollouts`) —
+Нужны `kubectl`, `make` и поднятая платформа с context `llm-platform` в kubeconfig (её
+требования — в README llm-platform). Для управления выкаткой из терминала (`kubectl argo rollouts`) —
 плагин версии контроллера: `make -C ../llm-platform tools`.
 
 ```bash
 git clone https://github.com/Pavel-Husakouski/llm-platform.git ../llm-platform
 export DEEPSEEK_API_KEY=sk-...   # нужен только платформе, make читает его из окружения
-make -C ../llm-platform up       # кластер, Argo CD, LiteLLM, Langfuse, Prometheus
+make -C ../llm-platform up       # Argo CD, LiteLLM, Langfuse, Prometheus в k3s
 make up                          # ключи тенанта, root-app агента, ожидание
-npm run cli                      # тот же CLI, API на localhost:13000
+API_URL=http://192.168.50.195:30000 npm run cli   # тот же CLI, API кластера
 make down                        # удалить агента, платформа остаётся
 ```
 
@@ -100,13 +99,15 @@ make down                        # удалить агента, платформ
 | `make tenant` | `make tenant` платформы: virtual key, проект Langfuse, `platform-llm` |
 | `make status` | состояние Application и подов агента                                 |
 
-Каталог платформы задаёт `PLATFORM_DIR` (по умолчанию `../llm-platform`), kubectl работает с
-контекстом `kind-llm-platform`. `make up` падает сразу, если кластера нет или Application
-`llm-platform` не Synced/Healthy.
+Каталог платформы задаёт `PLATFORM_DIR` (по умолчанию `../llm-platform`). Кластер — те же
+`TARGET` и `HOST`, что у платформы: по умолчанию k3s на `192.168.50.195` (context
+`llm-platform`), `make up TARGET=kind` — локальный kind (context `kind-llm-platform`). `make
+up` падает сразу, если кластер недоступен или Application `llm-platform` не Synced/Healthy.
 
-| Адрес                    | Что                         |
-|--------------------------|-----------------------------|
-| `http://localhost:13000` | API агента (NodePort 30000) |
+| Адрес                         | Что                                    |
+|-------------------------------|----------------------------------------|
+| `http://192.168.50.195:30000` | API агента в k3s (NodePort 30000)      |
+| `http://localhost:13000`      | API агента в kind или `docker compose` |
 
 Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах платформы:
 `make -C ../llm-platform status`, пароли там же (`make -C ../llm-platform argocd-password` и
@@ -160,9 +161,9 @@ Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах 
   нагрузкой.
 
 ```bash
-kubectl --context kind-llm-platform -n agent get rollout agent
-kubectl --context kind-llm-platform -n agent get analysisrun
-kubectl --context kind-llm-platform -n agent describe analysisrun <name>   # значения метрик
+kubectl --context llm-platform -n agent get rollout agent
+kubectl --context llm-platform -n agent get analysisrun
+kubectl --context llm-platform -n agent describe analysisrun <name>   # значения метрик
 ```
 
 **Плохой релиз.** Учебная переменная `FAULT_ERROR_RATE` (доля от 0 до 1) заставляет `/chat`
@@ -222,7 +223,7 @@ gh workflow run rollback.yml -f tag=0.11.0-<sha7>
 API не теряет (WATCH/MULTI):
 
 ```bash
-kubectl --context kind-llm-platform -n agent port-forward svc/redis 16379:6379 &
+kubectl --context llm-platform -n agent port-forward svc/redis 16379:6379 &
 npm run migrate:history -- --url redis://localhost:16379 --dry-run
 npm run migrate:history -- --url redis://localhost:16379
 ```
@@ -347,7 +348,8 @@ Enter — следующий вопрос, или задайте свой воп
 - Заданные вопросы не повторяются: CLI создаёт `~/.agent-deploy-lab/client-id`, а API помнит по
   нему и роли последние 20 вопросов. Модель может пропустить повтор, это не строгая гарантия.
 - Сложность сама не растёт. Уровень можно задать в роли: `Senior Node AWS Developer`.
-- Адрес API берётся из `API_URL`, по умолчанию `http://localhost:13000`.
+- Адрес API берётся из `API_URL`, по умолчанию `http://localhost:13000` (`docker compose`);
+  для кластера — `API_URL=http://192.168.50.195:30000`.
 
 ## API
 
@@ -397,7 +399,7 @@ JSON mode DeepSeek, схему проверяет API ([src/review.ts](src/revie
 При ошибке LLM вместо `done` приходит `event: error` с `data: {"message":"..."}`.
 Невалидный запрос получает `400` с JSON-описанием ошибок до начала стрима.
 
-Пример без CLI:
+Пример без CLI (`docker compose`; в кластере — `192.168.50.195:30000`):
 
 ```bash
 curl -N localhost:13000/chat -H 'content-type: application/json' \
