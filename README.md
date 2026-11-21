@@ -76,8 +76,8 @@ VERSION=$(node -p "require('./release.json').version") GIT_SHA=$(git rev-parse -
 ## Кластер
 
 Тот же агент в Kubernetes, тенантом [llm-platform](https://github.com/Pavel-Husakouski/llm-platform):
-кластер `llm-platform` (k3s на хосте `192.168.50.195` или локальный kind), Argo CD, LiteLLM,
-Langfuse, Prometheus и Argo Rollouts живут там и общие для всех проектов. Этот репо кладёт в общий Argo CD свой root-app
+кластер `llm-platform` (k3s на хосте `192.168.50.195`), Argo CD, LiteLLM, Langfuse, Prometheus
+и Argo Rollouts живут там и общие для всех проектов. Этот репо кладёт в общий Argo CD свой root-app
 `agent-deploy-lab` (app-of-apps), остальное Argo CD синхронизирует из `deploy/` в git.
 
 Нужны `kubectl`, `make` и поднятая платформа с context `llm-platform` в kubeconfig (её
@@ -101,15 +101,14 @@ make down                        # удалить агента, платформ
 | `make tenant` | `make tenant` платформы: virtual key, проект Langfuse, `platform-llm` |
 | `make status` | состояние Application и подов агента                                 |
 
-Каталог платформы задаёт `PLATFORM_DIR` (по умолчанию `../llm-platform`). Кластер — те же
-`TARGET` и `HOST`, что у платформы: по умолчанию k3s на `192.168.50.195` (context
-`llm-platform`), `make up TARGET=kind` — локальный kind (context `kind-llm-platform`). `make
+Каталог платформы задаёт `PLATFORM_DIR` (по умолчанию `../llm-platform`). Кластер — k3s на
+`HOST`, том же, что у платформы (по умолчанию `192.168.50.195`, context `llm-platform`). `make
 up` падает сразу, если кластер недоступен или Application `llm-platform` не Synced/Healthy.
 
 | Адрес                         | Что                                    |
 |-------------------------------|----------------------------------------|
 | `http://192.168.50.195:30000` | API агента в k3s (NodePort 30000)      |
-| `http://localhost:13000`      | API агента в kind или `docker compose` |
+| `http://localhost:13000`      | API агента в `docker compose`          |
 
 Argo CD UI, Langfuse, LiteLLM, Prometheus и ClickHouse — на адресах платформы:
 `make -C ../llm-platform status`, пароли там же (`make -C ../llm-platform argocd-password` и

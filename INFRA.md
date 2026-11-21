@@ -1,7 +1,8 @@
 # Вынос LLM-инфраструктуры в общую платформу
 
-> Платформа с тех пор переехала с kind на k3s на выделенном хосте (`TARGET=k3s`, kind остался
-> вариантом `TARGET=kind`), см. README llm-platform. Ниже — исходный план переезда на kind.
+> Платформа с тех пор переехала с kind на k3s на выделенном хосте `192.168.50.195` (context
+> `llm-platform`, NodePort на IP хоста), см. README llm-platform. Ниже — исходный план переезда
+> на kind, порты `localhost` в нём устарели.
 
 План: LiteLLM, Langfuse, ClickHouse, Prometheus и Argo Rollouts уезжают в отдельный репо
 `llm-platform` с долгоживущим kind-кластером. `agent-deploy-lab` становится одним из его

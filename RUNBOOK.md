@@ -30,9 +30,7 @@ make -C ../llm-platform argocd-password # пароль admin в UI Argo CD
 | Langfuse          | `http://192.168.50.195:30300`, проект `agent`, теги `release:<v>`  |
 | LiteLLM UI        | `http://192.168.50.195:30400/ui`                                   |
 
-Платформа — k3s на хосте `192.168.50.195`, context `llm-platform`. Для локального kind
-(`TARGET=kind`): context `kind-llm-platform`, адреса — `make -C ../llm-platform status
-TARGET=kind`.
+Платформа — k3s на хосте `192.168.50.195`, context `llm-platform`.
 
 **Что сейчас в проде и что хочет git.** С этого начинается любой сценарий:
 
