@@ -56,8 +56,10 @@ echo 'DEEPSEEK_API_KEY=sk-...' > .env
 npm install                     # зависимости для CLI и тестов на хосте
 docker compose up -d --build    # redis + api на http://localhost:13000
 curl localhost:13000/healthz    # {"status":"ok","redis":true,"release":"0.3.0"}
-npm run cli                     # диалог с тренером
+npm run cli                     # диалог с тренером, против локального docker
 ```
+
+CLI против агента в кластере — [CLI: кластер или локальный docker](#против-кластера-или-локального-docker).
 
 Compose собирает образ `agent-deploy-lab:local` из [Dockerfile](Dockerfile). После правок
 кода, промпта или `release.json` нужен `docker compose up -d --build`. Версия и git sha
@@ -306,6 +308,31 @@ Rollout подключает его через `envFrom`. Ключ DeepSeek, mas
 
 ## CLI
 
+### Против кластера или локального docker
+
+CLI сам ничего не запускает, он только подключается к API по адресу из `API_URL`:
+
+| Где агент                  | Поднять                              | CLI                                                   |
+|----------------------------|--------------------------------------|-------------------------------------------------------|
+| k3s платформы              | `make up` (платформа уже поднята)    | `API_URL=http://192.168.50.195:30000 npm run cli`     |
+| локальный docker (compose) | `docker compose up -d --build`       | `npm run cli` (по умолчанию `http://localhost:13000`) |
+
+```bash
+# кластер: версия из main, ключи тенанта agent, трейсы в проект Langfuse agent
+curl -s http://192.168.50.195:30000/healthz
+API_URL=http://192.168.50.195:30000 npm run cli
+
+# локальный docker: текущий код из рабочей копии, ключ DEEPSEEK_API_KEY или .env
+docker compose up -d --build
+curl -s localhost:13000/healthz
+npm run cli
+```
+
+Чтобы всегда ходить в кластер, задайте `export API_URL=http://192.168.50.195:30000` в
+профиле шелла. `npm run load` берёт адрес из того же `API_URL`.
+
+### Диалог
+
 ```text
 $ npm run cli
 Роль [Node AWS Developer]:
@@ -348,8 +375,7 @@ Enter — следующий вопрос, или задайте свой воп
 - Заданные вопросы не повторяются: CLI создаёт `~/.agent-deploy-lab/client-id`, а API помнит по
   нему и роли последние 20 вопросов. Модель может пропустить повтор, это не строгая гарантия.
 - Сложность сама не растёт. Уровень можно задать в роли: `Senior Node AWS Developer`.
-- Адрес API берётся из `API_URL`, по умолчанию `http://localhost:13000` (`docker compose`);
-  для кластера — `API_URL=http://192.168.50.195:30000`.
+- Адрес API берётся из `API_URL`, см. [выше](#против-кластера-или-локального-docker).
 
 ## API
 
