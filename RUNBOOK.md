@@ -12,9 +12,10 @@
 
 ```bash
 make -C ../llm-platform tools           # плагин kubectl-argo-rollouts версии контроллера, один раз
-alias k='kubectl --context kind-llm-platform -n agent'
+alias k='kubectl --context llm-platform -n agent'
 # у плагина флаги идут после имени: kubectl --context ... argo rollouts не работает
-alias kar='kubectl argo rollouts --context kind-llm-platform -n agent'
+alias kar='kubectl argo rollouts --context llm-platform -n agent'
+API=http://192.168.50.195:30000         # API агента: NodePort 30000 на хосте k3s
 # итог AnalysisRun по метрикам, используется в сценарии 1
 AR='{range .status.metricResults[*]}{.name}: {.phase} {.measurements[*].value}{.message}{"\n"}{end}'
 make -C ../llm-platform status          # адреса Argo CD, Prometheus, Langfuse, LiteLLM
@@ -23,16 +24,20 @@ make -C ../llm-platform argocd-password # пароль admin в UI Argo CD
 
 | Что               | Где                                                                |
 |-------------------|--------------------------------------------------------------------|
-| API агента        | `http://localhost:13000`                                           |
-| Argo CD UI        | `http://localhost:18080`, Application `agent`                      |
-| Prometheus        | `http://localhost:19090`                                           |
-| Langfuse          | `http://localhost:13300`, проект `agent`, теги `release:<version>` |
-| LiteLLM UI        | `http://localhost:14000/ui`                                        |
+| API агента        | `http://192.168.50.195:30000`                                      |
+| Argo CD UI        | `http://192.168.50.195:30080`, Application `agent`                 |
+| Prometheus        | `http://192.168.50.195:30090`                                      |
+| Langfuse          | `http://192.168.50.195:30300`, проект `agent`, теги `release:<v>`  |
+| LiteLLM UI        | `http://192.168.50.195:30400/ui`                                   |
+
+Платформа — k3s на хосте `192.168.50.195`, context `llm-platform`. Для локального kind
+(`TARGET=kind`): context `kind-llm-platform`, адреса — `make -C ../llm-platform status
+TARGET=kind`.
 
 **Что сейчас в проде и что хочет git.** С этого начинается любой сценарий:
 
 ```bash
-curl -s localhost:13000/healthz                     # release, который отвечает
+curl -s $API/healthz                     # release, который отвечает
 kar get rollout agent                               # шаги, ревизии, поды, AnalysisRun
 k get rollout agent -o jsonpath='{.status.phase} {.status.message}{"\n"}'
 k get rs -o wide                                    # ReplicaSet → образ, у какого реплики
@@ -47,7 +52,7 @@ git fetch -q && git log --oneline -5 origin/main -- deploy/agent/kustomization.y
 - Argo CD опрашивает git раз в несколько минут. Ускорить:
 
   ```bash
-  kubectl --context kind-llm-platform -n argocd annotate application agent \
+  kubectl --context llm-platform -n argocd annotate application agent \
     argocd.argoproj.io/refresh=normal --overwrite
   ```
 
@@ -147,7 +152,7 @@ Rollout остаётся Degraded, пока git не вернут к рабоч�
 
    Merge проходит canary с анализом: нужна нагрузка `npm run load`.
 
-**Проверка.** `k get rollout agent` — 2/2, фаза `Healthy`; `curl -s localhost:13000/healthz`
+**Проверка.** `k get rollout agent` — 2/2, фаза `Healthy`; `curl -s $API/healthz`
 отвечает версией stable; Application `agent` — Synced, Healthy.
 
 **Что после.** Если причина в отсутствии теста, добавить тест в golden или injection.
@@ -190,7 +195,7 @@ Rollout остаётся Degraded, пока git не вернут к рабоч�
 gh workflow run rollback.yml -f tag=<тег>
 gh run list --workflow rollback.yml --limit 1     # id прогона
 gh run watch <id>
-kubectl --context kind-llm-platform -n argocd annotate application agent \
+kubectl --context llm-platform -n argocd annotate application agent \
   argocd.argoproj.io/refresh=normal --overwrite   # не ждать опроса git
 k get rollout agent -w                            # Ctrl-C, когда 2/2 на новом образе
 ```
@@ -203,8 +208,8 @@ k get rollout agent -w                            # Ctrl-C, когда 2/2 на 
 **Проверка.**
 
 ```bash
-curl -s localhost:13000/healthz                                    # release = целевой версии
-curl -s localhost:13000/metrics | grep agent_history_skipped_total # нет роста
+curl -s $API/healthz                                    # release = целевой версии
+curl -s $API/metrics | grep agent_history_skipped_total # нет роста
 k get rs -o wide                                                   # реплики у целевого образа
 ```
 
@@ -284,8 +289,8 @@ xdg-open reports-ci/injection.html
 ```bash
 # warn (40) и error (50): «ошибка при генерации ответа» с текстом ошибки шлюза
 k logs -l app.kubernetes.io/name=agent --tail=500 | grep -E '"level":(40|50)' | tail -20
-kubectl --context kind-llm-platform -n argocd get application litellm langfuse
-kubectl --context kind-llm-platform -n llm get pods
+kubectl --context llm-platform -n argocd get application litellm langfuse
+kubectl --context llm-platform -n llm get pods
 ```
 
 | В логе                          | Причина                       | Действие                      |
@@ -310,7 +315,7 @@ make tenant && k delete pod -l app.kubernetes.io/name=agent
 влияет: агент только логирует сбой Langfuse.
 
 ```bash
-kubectl --context kind-llm-platform -n langfuse get pods
+kubectl --context llm-platform -n langfuse get pods
 k logs -l app.kubernetes.io/name=agent --tail=500 | grep 'score в Langfuse'
 ```
 
