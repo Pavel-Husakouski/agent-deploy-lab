@@ -2,9 +2,9 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
-  name: agent
+  name: agent-deploy-lab
   labels:
-    app.kubernetes.io/name: agent
+    app.kubernetes.io/name: agent-deploy-lab
 spec:
   # Без ingress-контроллера трафик делится числом подов: 2 реплики дают шаг 50%.
   replicas: 2
@@ -15,7 +15,7 @@ spec:
     revisions: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: agent
+      app.kubernetes.io/name: agent-deploy-lab
   strategy:
     canary:
       # Анализ идёт фоном с первого шага. Провал прерывает выкатку: canary масштабируется в
@@ -37,7 +37,7 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: agent
+        app.kubernetes.io/name: agent-deploy-lab
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "13000"

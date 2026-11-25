@@ -26,11 +26,11 @@ spec:
           address: http://prometheus-server.monitoring:9090
           query: |
             (
-              sum(rate(agent_chat_requests_total{namespace="agent",rollouts_pod_template_hash="{{args.canary-hash}}",status="error"}[2m]) or vector(0))
-              / sum(rate(agent_chat_requests_total{namespace="agent",rollouts_pod_template_hash="{{args.canary-hash}}",status=~"ok|error|aborted"}[2m]))
+              sum(rate(agent_chat_requests_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.canary-hash}}",status="error"}[2m]) or vector(0))
+              / sum(rate(agent_chat_requests_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.canary-hash}}",status=~"ok|error|aborted"}[2m]))
             ) - (
-              sum(rate(agent_chat_requests_total{namespace="agent",rollouts_pod_template_hash="{{args.stable-hash}}",status="error"}[2m]) or vector(0))
-              / sum(rate(agent_chat_requests_total{namespace="agent",rollouts_pod_template_hash="{{args.stable-hash}}",status=~"ok|error|aborted"}[2m]))
+              sum(rate(agent_chat_requests_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.stable-hash}}",status="error"}[2m]) or vector(0))
+              / sum(rate(agent_chat_requests_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.stable-hash}}",status=~"ok|error|aborted"}[2m]))
             )
     # p95 длительности ответа: canary не медленнее stable больше чем вдвое. Корзины
     # гистограммы грубые (2, 5, 10 s), поэтому порог с запасом.
@@ -44,8 +44,8 @@ spec:
         prometheus:
           address: http://prometheus-server.monitoring:9090
           query: |
-            histogram_quantile(0.95, sum by (le) (rate(agent_chat_duration_seconds_bucket{namespace="agent",rollouts_pod_template_hash="{{args.canary-hash}}",status="ok"}[2m])))
-            / histogram_quantile(0.95, sum by (le) (rate(agent_chat_duration_seconds_bucket{namespace="agent",rollouts_pod_template_hash="{{args.stable-hash}}",status="ok"}[2m])))
+            histogram_quantile(0.95, sum by (le) (rate(agent_chat_duration_seconds_bucket{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.canary-hash}}",status="ok"}[2m])))
+            / histogram_quantile(0.95, sum by (le) (rate(agent_chat_duration_seconds_bucket{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.stable-hash}}",status="ok"}[2m])))
     # Стоимость одного успешного ответа: canary дороже stable не больше чем в 1.5 раза.
     - name: cost-per-request-ratio
       initialDelay: 1m
@@ -58,9 +58,9 @@ spec:
           address: http://prometheus-server.monitoring:9090
           query: |
             (
-              sum(rate(agent_llm_cost_usd_total{namespace="agent",rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
-              / sum(rate(agent_chat_requests_total{namespace="agent",rollouts_pod_template_hash="{{args.canary-hash}}",status="ok"}[2m]))
+              sum(rate(agent_llm_cost_usd_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
+              / sum(rate(agent_chat_requests_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.canary-hash}}",status="ok"}[2m]))
             ) / (
-              sum(rate(agent_llm_cost_usd_total{namespace="agent",rollouts_pod_template_hash="{{args.stable-hash}}"}[2m]))
-              / sum(rate(agent_chat_requests_total{namespace="agent",rollouts_pod_template_hash="{{args.stable-hash}}",status="ok"}[2m]))
+              sum(rate(agent_llm_cost_usd_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.stable-hash}}"}[2m]))
+              / sum(rate(agent_chat_requests_total{namespace="agent-deploy-lab",rollouts_pod_template_hash="{{args.stable-hash}}",status="ok"}[2m]))
             )
